@@ -4,6 +4,8 @@
 
 最终方案见 [docs/DESIGN.md](docs/DESIGN.md)，实际进度与边界见 [docs/STATUS.md](docs/STATUS.md)，复用范围见 [docs/UPSTREAM.md](docs/UPSTREAM.md)。
 
+第一次学习本项目，请从 [学习复盘与面试笔记](docs/LEARNING_REVIEW.md) 开始：包含样例讲解、架构与源码导读、面试问答、证据边界和下一轮实验计划。
+
 ## 代码归档与回档
 
 私有仓库：[FionnLeee/RepoPilot](https://github.com/FionnLeee/RepoPilot)，默认分支 `main`。克隆时使用 `git clone --recurse-submodules https://github.com/FionnLeee/RepoPilot.git` 获取固定版本的上游依赖。
