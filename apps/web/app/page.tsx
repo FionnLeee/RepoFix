@@ -45,6 +45,7 @@ type Run = {
     artifact_path?: string;
     error?: string;
     usage?: { input_tokens: number; output_tokens: number };
+    usage_status?: "complete" | "partial" | "unavailable";
     changed_files?: string[];
     provenance?: { commit: string; source_sha256: string; image_id: string; context_mode: string };
   };
@@ -419,7 +420,9 @@ function Workspace() {
                       {run.spec && <><dt>仓库版本</dt><dd>{run.spec.source}<br />{run.spec.commit}</dd>
                         <dt>上下文策略</dt><dd>{run.contextMode === "compact" ? "历史压缩" : "完整历史"}</dd>
                         <dt>修改文件</dt><dd>{run.result?.changed_files?.join(", ") || "等待候选"}</dd>
-                        <dt>输入 / 输出 token</dt><dd>{run.result?.usage ? `${run.result.usage.input_tokens} / ${run.result.usage.output_tokens}` : "完成后汇总"}</dd></>}
+                        <dt>输入 / 输出 token</dt><dd>{run.result?.usage
+                          ? `${run.result.usage.input_tokens} / ${run.result.usage.output_tokens}${run.result.usage_status === "partial" ? "（部分调用）" : run.result.usage_status !== "complete" ? "（覆盖未核实）" : ""}`
+                          : ["SUCCEEDED", "FAILED", "CANCELLED", "INTERRUPTED"].includes(run.status) ? "未获得用量记录" : "完成后汇总"}</dd></>}
                     </dl>
                     <div className="fact-note">
                       当前版本提供仓库执行与验收。记忆、权限审批及

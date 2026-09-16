@@ -9,6 +9,7 @@ import aio_pika
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
+from repopilot.reporting import failure_result
 from repopilot.runtime import Cancelled, execute_run
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -99,11 +100,8 @@ async def handle(message: aio_pika.IncomingMessage):
                 logging.info("Run %s completed: %s", run["id"], status)
             except Exception as error:
                 status = "CANCELLED" if isinstance(error, Cancelled) or cancelled.is_set() else "FAILED"
-                text = str(error)
-                if key := os.environ.get("OPENAI_API_KEY"):
-                    text = text.replace(key, "[REDACTED]")
-                text = text[:1500]
-                await asyncio.to_thread(emit, status, {"error": text, "mode": run["mode"]}, status)
+                result = await asyncio.to_thread(failure_result, run, error)
+                await asyncio.to_thread(emit, status, result, status)
                 logging.warning("Run %s stopped: %s", run["id"], type(error).__name__)
             finally:
                 done.set()

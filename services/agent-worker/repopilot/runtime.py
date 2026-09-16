@@ -14,6 +14,7 @@ from minisweagent.models.litellm_textbased_model import LitellmTextbasedModel
 from minisweagent.models.test_models import DeterministicModel, make_output
 
 from repopilot.fixture import DEVELOPMENT_TESTS, FIXED, SOURCE, VERIFICATION_TESTS
+from repopilot.reporting import usage_summary
 
 SYSTEM = """You repair a Python repository in /workspace. You can execute commands only inside this isolated workspace.
 Return a brief action description and exactly one command in a fenced block tagged mswea_bash_command.
@@ -124,6 +125,15 @@ class Sandbox:
 
 
 class SafeModel(LitellmTextbasedModel):
+    def __init__(self, **kwargs):
+        kwargs.setdefault("format_error_template", (
+            "Expected exactly one executable action; found {{actions|length}}. "
+            "Reply with one command in this exact format:\n"
+            "```mswea_bash_command\npwd\n```\n"
+            "Replace pwd with your next command. Do not reply with prose alone."
+        ))
+        super().__init__(**kwargs)
+
     def serialize(self):
         return {
             "info": {
@@ -257,14 +267,6 @@ def execute_run(run: dict, emit, cancelled: threading.Event) -> dict:
         )
     finally:
         verifier.close()
-    usage = {"input_tokens": 0, "output_tokens": 0}
-    usage_known = run["mode"] == "demo"
-    for message in agent.full_messages:
-        info = message.get("extra", {}).get("response", {}).get("usage")
-        if info:
-            usage_known = True
-            usage["input_tokens"] += info.get("prompt_tokens", 0)
-            usage["output_tokens"] += info.get("completion_tokens", 0)
     result = {
         "patch": patch,
         "verification": {
@@ -273,9 +275,8 @@ def execute_run(run: dict, emit, cancelled: threading.Event) -> dict:
             "baseline_returncode": baseline["returncode"],
             "returncode": verified["returncode"],
         },
-        "model_calls": agent.n_calls,
+        **usage_summary(agent.full_messages, agent.n_calls, run["mode"]),
         "mode": run["mode"],
-        "usage": usage if usage_known else None,
         "cost_usd": 0 if run["mode"] == "demo" else None,
         "artifact_path": f"{run['id']}/",
         "upstream_commit": "04d809ceab9df28f9adaed044884180159172930",

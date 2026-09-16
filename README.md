@@ -77,6 +77,8 @@ uv run python scripts/evaluate_baselines.py --live
 uv run python scripts/evaluate_baselines.py --live --repeats 3
 # 不调用模型，使用归档源码、测试、镜像 ID 和 patch 重新验收
 docker compose exec -T worker python -m repopilot.replay <run-id>
+# 从完整轨迹恢复旧报告漏记的用量，另存报告，不调用模型或修改原报告
+uv run python scripts/evaluate_baselines.py --recover-report runtime/validation/<report>.json
 ```
 
 运行工件保存源码快照、patch、测试摘要、源码／测试／补丁哈希、Git commit、容器 image ID、模型参数和完整轨迹。摘要在页面显示；完整报告位于本地 `runtime/validation/` 与 `runtime/artifacts/`，不提交。复现验收需保留这些工件和对应镜像；模型输出本身不保证逐次相同。
@@ -87,7 +89,9 @@ docker compose exec -T worker python -m repopilot.replay <run-id>
 
 这是有损的抽取式压缩 v1，不是语义摘要或长期记忆；字符阈值不是精确 token 预算。小任务可能不触发，或压缩后反而需要更多调用，必须结合实测成功率和 token 判断。自建任务数量小，单次配对不能证明统计显著提升。
 
-2026-09-16 首轮实测：三个任务的两模式预设运行共 6/6 通过；沿用 `deepseek-v4-flash-0731` 的真实单次配对，full 为 1/3、compact 为 2/3。失败包括两次连续模型输出格式错误和一次漏修折扣范围校验。只有一次真实运行触发压缩（5,001 → 3,985 字符），两次格式失败缺少完整 provider 用量，不能据此声称压缩提高成功率或节省总 token。另一个自定义仓库请求成功修改两个文件，真实候选补丁已通过无模型重放验收。
+2026-09-16 首轮实测：三个任务的两模式预设运行共 6/6 通过；沿用 `deepseek-v4-flash-0731` 的真实单次配对，full 为 1/3、compact 为 2/3。失败包括两次连续模型输出格式错误和一次漏修折扣范围校验。只有一次真实运行触发压缩（5,001 → 3,985 字符）。两次格式失败的用量原先被失败上报遗漏，现已从完整轨迹恢复：full 输入／输出合计 7,163／1,770 token，compact 为 9,070／4,900 token，六次运行均有完整记录。本组样本没有显示 token 节省，成功率差异也不能归因于压缩。另一个自定义仓库请求成功修改两个文件，真实候选补丁已通过无模型重放验收。
+
+成功与失败运行均汇总轨迹中的用量，包括格式错误回复。`usage_status` 区分完整、部分与不可用；部分记录只是已知 token 的小计，不代表整次运行消耗。基线报告同时列出完整覆盖的运行数。格式重试提示包含正确的命令块示例，连续三次格式错误仍会停止。
 
 当前只面向单用户本机运行。用户登录、权限审批、项目记忆、独立 Reviewer、执行恢复、S3 工件存储、OTel 和正式 SWE-bench 尚未完成；Qdrant/Redis 仅有扩展启动配置。任务失联标记中断，不自动恢复；API 的 broker 重连与孤儿沙箱清理仍待完善。固定测试验收不保证任意对抗代码无法干扰测试进程。
 

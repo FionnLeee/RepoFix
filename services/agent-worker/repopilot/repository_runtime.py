@@ -9,6 +9,7 @@ from pathlib import Path
 
 from minisweagent.models.test_models import DeterministicModel, make_output
 
+from repopilot.reporting import usage_summary
 from repopilot.repository import RepositoryTask, digest, load_snapshot, validate_files
 from repopilot.runtime import SYSTEM, SafeModel, Sandbox, TracedAgent
 
@@ -202,13 +203,6 @@ def execute_repository_run(run, emit, cancelled):
                   and before["failures"] > 0 and before["errors"] == 0 and before["skipped"] == 0
                   and baseline["returncode"] != 0 and verified["returncode"] == 0
                   and before["ids"] == after["ids"] and after["successful"] and after["skipped"] == 0)
-    usage = {"input_tokens": 0, "output_tokens": 0}
-    usage_known = run["mode"] == "demo"
-    for message in agent.full_messages:
-        item = message.get("extra", {}).get("response", {}).get("usage", {})
-        usage_known = usage_known or bool(item)
-        usage["input_tokens"] += item.get("prompt_tokens", 0)
-        usage["output_tokens"] += item.get("completion_tokens", 0)
     provenance.update(model=os.getenv("MODEL_NAME") if run["mode"] == "live" else "deterministic",
                       temperature=0.2, max_output_tokens=1600, step_limit=20,
                       prompt_sha256=hashlib.sha256(system.encode()).hexdigest(),
@@ -219,7 +213,7 @@ def execute_repository_run(run, emit, cancelled):
     result = {"patch": patch, "changed_files": changed, "provenance": provenance,
               "verification": {"passed": passed, "output": verified["output"], "baseline": baseline,
                                "candidate": verified, "patch_replayed": True},
-              "model_calls": agent.n_calls, "usage": usage if usage_known else None, "mode": run["mode"],
+              **usage_summary(agent.full_messages, agent.n_calls, run["mode"]), "mode": run["mode"],
               "context_compactions": agent.compactions,
               "duration_seconds": round(time.monotonic() - started, 2), "cost_usd": None,
               "artifact_path": f"{run['id']}/"}

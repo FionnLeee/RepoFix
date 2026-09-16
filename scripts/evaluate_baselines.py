@@ -2,11 +2,52 @@
 
 import argparse
 import json
+import sys
 import time
 import uuid
 from pathlib import Path
 
 import httpx
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "services/agent-worker"))
+from repopilot.reporting import trajectory_summary  # noqa: E402
+
+
+def summarize(report):
+    summary = {}
+    for context in dict.fromkeys(r["context"] for r in report["runs"]):
+        rows = [r for r in report["runs"] if r["context"] == context]
+        results = [r.get("result") or {} for r in rows]
+        usages = [r.get("usage") for r in results]
+        summary[context] = {
+            "attempted": len(rows), "succeeded": sum(r["status"] == "SUCCEEDED" for r in rows),
+            "usage_covered_runs": sum(u is not None for u in usages),
+            "usage_complete_runs": sum(r.get("usage_status") == "complete" for r in results),
+            "usage_partial_runs": sum(r.get("usage_status") == "partial" for r in results),
+            "input_tokens_reported": sum(u["input_tokens"] for u in usages if u is not None),
+            "output_tokens_reported": sum(u["output_tokens"] for u in usages if u is not None),
+            "compactions": sum(len(r.get("context_compactions", [])) for r in results),
+        }
+    return summary
+
+
+def recover_report(source, artifacts, output):
+    report = json.loads(source.read_text(encoding="utf-8"))
+    report["recovered_from"] = str(source.resolve())
+    for row in report["runs"]:
+        try:
+            metrics = trajectory_summary(row["run_id"], report["mode"], artifacts)
+        except (OSError, ValueError, KeyError, TypeError, AttributeError) as error:
+            row["usage_recovery"] = type(error).__name__
+            continue
+        row["result"] = {**(row.get("result") or {}), **metrics}
+        row["usage_recovery"] = "local_trajectory"
+    report["summary"] = summarize(report)
+    output.mkdir(parents=True, exist_ok=True)
+    target = output / f"recovered-{source.stem}-{uuid.uuid4().hex[:8]}.json"
+    target.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+    print(json.dumps({"report": str(target), "summary": report["summary"]}), flush=True)
+    return report
 
 
 def evaluate(mode, contexts, repeats, output):
@@ -57,17 +98,7 @@ def evaluate(mode, contexts, repeats, output):
                         row["outcome"] = "execution_or_transport_failure"
                     target.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
                     print(json.dumps({k: row[k] for k in ("task_id", "context", "status")}), flush=True)
-        report["summary"] = {}
-        for context in contexts:
-            rows = [r for r in report["runs"] if r["context"] == context]
-            usages = [(r.get("result") or {}).get("usage") for r in rows]
-            report["summary"][context] = {
-                "attempted": len(rows), "succeeded": sum(r["status"] == "SUCCEEDED" for r in rows),
-                "usage_covered_runs": sum(u is not None for u in usages),
-                "input_tokens_reported": sum(u["input_tokens"] for u in usages if u is not None),
-                "output_tokens_reported": sum(u["output_tokens"] for u in usages if u is not None),
-                "compactions": sum(len((r.get("result") or {}).get("context_compactions", [])) for r in rows),
-            }
+        report["summary"] = summarize(report)
         target.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
         print(json.dumps({"report": str(target), "summary": report["summary"]}), flush=True)
         return report
@@ -79,6 +110,11 @@ if __name__ == "__main__":
     parser.add_argument("--contexts", nargs="+", choices=["full", "compact"], default=["full", "compact"])
     parser.add_argument("--repeats", type=int, choices=range(1, 11), default=1)
     parser.add_argument("--output", type=Path, default=Path("runtime/validation"))
+    parser.add_argument("--recover-report", type=Path, help="Recover usage from local trajectories; makes no API calls")
+    parser.add_argument("--artifacts-root", type=Path, default=Path("runtime/artifacts"))
     args = parser.parse_args()
+    if args.recover_report:
+        recover_report(args.recover_report, args.artifacts_root, args.output)
+        raise SystemExit(0)
     report = evaluate("live" if args.live else "demo", args.contexts, args.repeats, args.output)
     raise SystemExit(0 if all(r["status"] == "SUCCEEDED" for r in report["runs"]) else 1)
