@@ -11,3 +11,8 @@ __pycache__/
 runtime/
 test-results/
 playwright-report/
+
+# Keep learning, design and validation documents local; publish README only.
+/docs/
+*.md
+!/README.md

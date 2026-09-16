@@ -2,9 +2,9 @@
 
 面向代码任务的 Agent 工作台，基于固定版本的 [mini-swe-agent](https://github.com/SWE-agent/mini-swe-agent) 扩展。
 
-最终方案见 [docs/DESIGN.md](docs/DESIGN.md)，实际进度与边界见 [docs/STATUS.md](docs/STATUS.md)，复用范围见 [docs/UPSTREAM.md](docs/UPSTREAM.md)。
+技术栈：Next.js / TypeScript 工作台、NestJS / Fastify 控制端、Prisma / PostgreSQL、RabbitMQ 和 Python Worker。当前为固定样例的本地可运行版本。
 
-第一次学习本项目，请从 [学习复盘与面试笔记](docs/LEARNING_REVIEW.md) 开始：包含样例讲解、架构与源码导读、面试问答、证据边界和下一轮实验计划。
+复用 mini-swe-agent 2.4.6（MIT）的 Agent 循环、模型接入与轨迹格式，以 submodule 固定提交 `04d809ceab9df28f9adaed044884180159172930`，保留上游许可证。RepoPilot 在外部新增任务管理、跨语言 Worker 协议、Docker 沙箱适配、独立验收和网页工作台。
 
 ## 代码归档与回档
 
@@ -12,7 +12,7 @@
 
 每轮改进通过适用验证后，提交相关文件并执行 `git push origin main`。通过 `git log --oneline` 查找历史版本；需要撤销某次修改时，执行 `git revert <commit>`，验证后推送，保留完整历史。
 
-Git 归档包含源码、设计和脱敏验证证据；本机 `.env`、数据库数据及 `runtime/` 工件不在其中，恢复部署时需另行配置。
+Git 归档包含源码、配置模板和本 README。学习笔记、设计方案、复盘和验证记录仅保存在本地，不提交到 GitHub。本机 `.env`、数据库数据及 `runtime/` 工件不在归档中，恢复部署时需另行配置。
 
 ## 本地启动
 
