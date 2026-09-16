@@ -2,7 +2,15 @@
 name = "repopilot-worker"
 version = "0.1.0"
 requires-python = ">=3.12"
-dependencies = ["mini-swe-agent", "aio-pika>=9.5,<10", "docker>=7.1,<8", "httpx>=0.28,<1"]
+dependencies = [
+    "mini-swe-agent",
+    "aio-pika>=9.5,<10",
+    "docker>=7.1,<8",
+    "httpx>=0.28,<1",
+    "qdrant-client>=1.15,<1.16",
+    "fastembed>=0.7,<0.8",
+    "onnxruntime==1.23.2",
+]
 
 [tool.uv.sources]
 mini-swe-agent = { path = "vendor/mini-swe-agent" }

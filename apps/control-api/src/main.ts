@@ -38,6 +38,7 @@ import {
   MinLength,
   Matches,
   IsArray,
+  IsBoolean,
   ArrayMinSize,
   ArrayMaxSize,
   ArrayUnique,
@@ -46,6 +47,7 @@ import {
 import { Type } from "class-transformer";
 import { readFileSync, existsSync } from "node:fs";
 import { timingSafeEqual } from "node:crypto";
+import { ContextService, ContextOwner, IndexBegin, IndexPublish, MemoryWrite, projectKey } from "./context";
 
 const TASK =
   "修复 pricing.py 中 discounted_total：百分比折扣应按百分比计算，结果保留两位小数，并拒绝小于 0 或大于 100 的折扣。运行开发测试后提交补丁。";
@@ -77,7 +79,8 @@ class CreateRun {
   @IsOptional() @IsString() @MinLength(10) @MaxLength(10000) task?: string;
   @IsOptional() @ValidateNested() @Type(() => RepositorySpec) spec?: RepositorySpec;
   @IsOptional() @IsString() @MaxLength(60) baselineId?: string;
-  @IsOptional() @IsIn(["full", "compact"]) contextMode?: string;
+  @IsOptional() @IsIn(["full", "compact", "managed"]) contextMode?: string;
+  @IsOptional() @IsBoolean() memoryEnabled?: boolean;
 }
 class Claim {
   @IsString() @MinLength(1) @MaxLength(100) workerId!: string;
@@ -193,7 +196,7 @@ class Api {
     return {
       status: "ok",
       upstream: "mini-swe-agent 2.4.6",
-      milestone: "M0/M1",
+      milestone: "M2",
       liveEnabled: process.env.LIVE_ENABLED === "true",
     };
   }
@@ -202,6 +205,43 @@ class Api {
   }
   @Get("baseline-tasks") baselines() {
     return catalog().map(({ id, title, task, spec }) => ({ id, title, task, spec }));
+  }
+  @Get("projects") projects() {
+    return this.db.project.findMany({ where: { owner: "local" }, orderBy: { createdAt: "desc" } });
+  }
+  @Get("projects/:id/memories") memories(@Param("id") id: string) {
+    return new ContextService(this.db).memories(id);
+  }
+  @Post("projects/:id/memories") memoryCreate(@Param("id") id: string, @Body() body: MemoryWrite) {
+    return new ContextService(this.db).writeMemory(id, body);
+  }
+  @Post("projects/:id/memories/:memoryId") memoryUpdate(@Param("id") id: string,
+    @Param("memoryId") memoryId: string, @Body() body: MemoryWrite) {
+    return new ContextService(this.db).writeMemory(id, body, memoryId);
+  }
+  @Get("projects/:id/indexes") indexes(@Param("id") id: string) {
+    return this.db.indexHead.findMany({ where: { projectId: id }, orderBy: { updatedAt: "desc" } });
+  }
+  @Post("runs/:id/compact") async compact(@Param("id") id: string) {
+    const changed = await this.db.run.updateMany({ where: { id, contextMode: "managed", status: { in: ["QUEUED", "RUNNING"] } },
+      data: { compactRequested: { increment: 1 } } });
+    if (!changed.count) throw new ConflictException("仅进行中的 managed 任务支持压缩请求");
+    return { requested: true };
+  }
+  @Post("internal/runs/:id/context") context(@Param("id") id: string,
+    @Headers("authorization") token: string, @Body() body: ContextOwner) {
+    this.authorize(token);
+    return new ContextService(this.db).state(id, body);
+  }
+  @Post("internal/runs/:id/indexes/begin") indexBegin(@Param("id") id: string,
+    @Headers("authorization") token: string, @Body() body: IndexBegin) {
+    this.authorize(token);
+    return new ContextService(this.db).begin(id, body);
+  }
+  @Post("internal/runs/:id/indexes/publish") indexPublish(@Param("id") id: string,
+    @Headers("authorization") token: string, @Body() body: IndexPublish) {
+    this.authorize(token);
+    return new ContextService(this.db).publish(id, body);
   }
   @Post("runs") async create(@Body() body: CreateRun) {
     if (body.mode === "live" && process.env.LIVE_ENABLED !== "true")
@@ -213,7 +253,9 @@ class Api {
     const rawSpec = baseline?.spec || body.spec;
     const spec = rawSpec ? { ...rawSpec, subdir: rawSpec.subdir || "", testCommand: rawSpec.testCommand || "python -m unittest discover -v" } : null;
     const task = baseline?.task || body.task || TASK;
-    const contextMode = body.contextMode || "full";
+    const contextMode = body.contextMode || (spec ? "managed" : "full");
+    const memoryEnabled = !!spec && contextMode === "managed" && (body.memoryEnabled ?? !body.baselineId);
+    const projectId = spec ? projectKey(spec.source, spec.subdir) : null;
     if (spec) {
       if (!baseline && !body.task) throw new BadRequestException("指定仓库需要任务说明");
       if (body.mode === "demo" && !baseline) throw new BadRequestException("自定义仓库仅支持真实模型；预设演示仅用于内置基线");
@@ -227,7 +269,7 @@ class Api {
       throw new BadRequestException("任务说明与上下文模式需要指定仓库或基线任务");
     }
     const matches = (run: any) => run.mode === body.mode && run.task === task &&
-      canonical(run.spec) === canonical(spec) && run.baselineId === (body.baselineId || null) && run.contextMode === contextMode;
+      canonical(run.spec) === canonical(spec) && run.baselineId === (body.baselineId || null) && run.contextMode === contextMode && run.memoryEnabled === memoryEnabled;
     const existing = await this.db.run.findUnique({
       where: { requestKey: body.requestKey },
     });
@@ -238,9 +280,12 @@ class Api {
     }
     try {
       return await this.db.$transaction(async (tx) => {
+        if (projectId) await tx.project.upsert({ where: { id: projectId }, update: {},
+          create: { id: projectId, source: spec.source, subdir: spec.subdir } });
         const run = await tx.run.create({
           data: { requestKey: body.requestKey, mode: body.mode, task,
-            ...(spec ? { spec: spec as Prisma.InputJsonValue } : {}), baselineId: body.baselineId, contextMode },
+            ...(spec ? { spec: spec as Prisma.InputJsonValue } : {}), baselineId: body.baselineId,
+            contextMode, projectId, memoryEnabled },
         });
         await tx.event.create({
           data: {

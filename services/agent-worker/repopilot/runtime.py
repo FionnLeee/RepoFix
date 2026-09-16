@@ -2,6 +2,7 @@ import base64
 import difflib
 import json
 import os
+import re
 import threading
 import time
 import uuid
@@ -34,6 +35,8 @@ class Sandbox:
         self.emit, self.cancelled, self.index = emit, cancelled, 0
         self.config = {"network": "none", "memory": "256m", "user": "1000:1000"}
         self.initial_paths = set(files) if files is not None else {"pricing.py", "test_pricing.py"}
+        self.log_folder = Path(os.getenv("ARTIFACT_ROOT", "runtime/artifacts")) / run_id / "tool-logs"
+        self.archive_logs = False
         self.container = self.client.containers.run(
             image or os.environ.get("SANDBOX_IMAGE", "python:3.12-slim"),
             ["sleep", "600"],
@@ -95,8 +98,22 @@ class Sandbox:
                 }
             )
         self.index += 1
+        if self.archive_logs and command.startswith("repopilot_read_log "):
+            match = re.fullmatch(r"repopilot_read_log ([0-9a-f]{32}) ([0-9]{1,8})", command)
+            if not match:
+                raise ValueError("Expected repopilot_read_log <id> <byte-offset>")
+            path = self.log_folder / f"{match[1]}.log"
+            if not path.is_file():
+                output = {"output": "Log not found in this run", "returncode": 1, "exception_info": ""}
+            else:
+                with path.open("rb") as handle:
+                    handle.seek(int(match[2]))
+                    text = handle.read(12000).decode(errors="replace")
+                output = {"output": text, "returncode": 0, "exception_info": ""}
+            self.emit("TOOL_RESULT", {"command": command, **output, "duration_ms": 0})
+            return output
         output_path = f"/tmp/tool-{uuid.uuid4().hex}"
-        script = 'ulimit -f 4096; timeout -k 2 25 sh -c "$1" > "$2" 2>&1; code=$?; head -c 16000 "$2"; rm -f "$2"; exit "$code"'
+        script = 'ulimit -f 4096; timeout -k 2 25 sh -c "$1" > "$2" 2>&1; code=$?; head -c 16000 "$2"; exit "$code"'
         started = time.monotonic()
         result = self.container.exec_run(
             ["sh", "-c", script, "repopilot-tool", command, output_path], workdir="/workspace", user="1000:1000"
@@ -106,6 +123,19 @@ class Sandbox:
             "returncode": result.exit_code,
             "exception_info": "",
         }
+        try:
+            if self.archive_logs:
+                log_id = uuid.uuid4().hex
+                # Read only a regular file through O_NOFOLLOW; sandbox commands may tamper with /tmp.
+                read_log = "import os,stat,sys; f=os.open(sys.argv[1],os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK); assert stat.S_ISREG(os.fstat(f).st_mode); sys.stdout.buffer.write(os.read(f,4194304)); os.close(f)"
+                full = self.container.exec_run(["python", "-I", "-c", read_log, output_path])
+                if full.exit_code:
+                    raise ValueError("Tool log is not a readable regular file")
+                self.log_folder.mkdir(parents=True, exist_ok=True)
+                (self.log_folder / f"{log_id}.log").write_bytes(full.output)
+                output["output"] += f"\n[Archived output: repopilot_read_log {log_id} 0; capture limit 4 MiB]"
+        finally:
+            self.container.exec_run(["rm", "-f", "--", output_path])
         self.emit(
             "TOOL_RESULT", {"command": command, **output, "duration_ms": round((time.monotonic() - started) * 1000)}
         )
@@ -154,6 +184,7 @@ class TracedAgent(DefaultAgent):
         self.checkpoints = None
         self._checkpoint_safe = False
         self._restored = False
+        self.context_manager = None
         super().__init__(*args, **kwargs)
         self.emit, self.cancelled = emit, cancelled
 
@@ -180,6 +211,8 @@ class TracedAgent(DefaultAgent):
         self.n_consecutive_format_errors = state.consecutive_format_errors
         self.env.index = state.tool_calls
         self._start_time = time.time() - state.active_seconds
+        if self.context_manager:
+            self.context_manager.state = state.context_state
         if isinstance(self.model, DeterministicModel):
             if state.model_cursor is None:
                 raise ValueError("Deterministic model cursor is missing")
@@ -240,6 +273,8 @@ class TracedAgent(DefaultAgent):
         data = super().serialize(*extra_dicts)
         data["full_messages"] = self.full_messages
         data["context_compactions"] = self.compactions
+        if self.context_manager:
+            data["context_state"] = self.context_manager.state
         return data
 
     def compact_context(self):
@@ -267,6 +302,10 @@ class TracedAgent(DefaultAgent):
         if self.cancelled.is_set():
             raise Cancelled("任务已取消")
         self.compact_context()
+        prepared = None
+        if self.context_manager:
+            from repopilot.repository_runtime import read_tree
+            prepared = self.context_manager.prepare(self, read_tree(self.env, quiescent=True))
         if self.checkpoints:
             if self.checkpoints.latest is None:
                 self.checkpoints.save(self, "ready")
@@ -277,7 +316,18 @@ class TracedAgent(DefaultAgent):
             {"call": self.n_calls + 1, "input_characters": sum(len(str(m.get("content", ""))) for m in self.messages)},
         )
         try:
-            return super().query()
+            if prepared is None:
+                return super().query()
+            history = self.messages
+            self.messages = prepared
+            try:
+                response = super().query()
+            finally:
+                self.messages = history
+            # super().query() already archived the response via add_messages().
+            self.messages.append(response)
+            self.context_manager.record_usage(response, self.n_calls)
+            return response
         except InterruptAgentFlow:
             # Format/limit errors have not executed a tool; the upstream loop records them before save().
             self._checkpoint_safe = True

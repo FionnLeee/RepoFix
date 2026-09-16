@@ -21,6 +21,7 @@ import {
   Workflow,
 } from "lucide-react";
 import { Button } from "../components/button";
+import { ProjectContext } from "../components/project-context";
 type Event = {
   id: number;
   type: string;
@@ -35,6 +36,8 @@ type Run = {
   workerId: string | null;
   baselineId?: string;
   contextMode?: string;
+  projectId?: string;
+  memoryEnabled?: boolean;
   spec?: { source: string; commit: string; subdir: string };
   createdAt: string;
   events: Event[];
@@ -66,6 +69,10 @@ const labels: Record<string, string> = {
   REPOSITORY_READY: "仓库快照已固定",
   CONTEXT_COMPACTED: "已压缩历史上下文",
   CHECKPOINT_SAVED: "已保存执行检查点",
+  INDEX_PUBLISHED: "代码索引已发布",
+  INDEX_FALLBACK: "使用当前文件检索",
+  CONTEXT_ASSEMBLED: "上下文已组装",
+  CONTEXT_USAGE: "上下文用量核对",
 };
 async function api<T>(path: string, body?: unknown): Promise<T> {
   const res = await fetch(
@@ -93,7 +100,8 @@ function Workspace() {
     [tab, setTab] = useState("trace"),
     [error, setError] = useState(""),
     [taskKind, setTaskKind] = useState("checkout"),
-    [contextMode, setContextMode] = useState("full"),
+    [contextMode, setContextMode] = useState("managed"),
+    [memoryEnabled, setMemoryEnabled] = useState(true),
     [source, setSource] = useState(""),
     [commit, setCommit] = useState(""),
     [subdir, setSubdir] = useState(""),
@@ -144,10 +152,10 @@ function Workspace() {
         mode,
         requestKey: crypto.randomUUID(),
         ...(taskKind === "legacy" ? {} : taskKind === "custom" ? {
-          task: taskText, contextMode,
+          task: taskText, contextMode, memoryEnabled,
           spec: { source, commit, subdir, allowedPaths: paths.split(",").map(p => p.trim()).filter(Boolean),
             testCommand, verificationFiles: { "test_acceptance.py": verification } },
-        } : { baselineId: taskKind, contextMode }),
+        } : { baselineId: taskKind, contextMode, memoryEnabled: false }),
       });
       setSelected(run.id);
       setTab("trace");
@@ -276,6 +284,7 @@ function Workspace() {
               <option value="legacy">原始单文件折扣示例</option>
             </select></label>
             {taskKind !== "legacy" && <label>上下文策略<select value={contextMode} onChange={e => setContextMode(e.target.value)}>
+              <option value="managed">预算、检索与结构化压缩（M2）</option>
               <option value="full">完整历史（基线）</option>
               <option value="compact">历史压缩（对照实验）</option>
             </select></label>}
@@ -284,6 +293,7 @@ function Workspace() {
               <small>固定 commit：{baselines.data?.find(t => t.id === taskKind)?.spec.commit || "正在加载任务集"}</small>
             </p>}
             {taskKind === "custom" && <>
+              {contextMode === "managed" && <label className="form-wide"><input type="checkbox" checked={memoryEnabled} onChange={e => setMemoryEnabled(e.target.checked)} /> 加载已确认且版本匹配的项目记忆</label>}
               <label>公开 GitHub URL 或 registered:仓库编号<input value={source} onChange={e => setSource(e.target.value)} placeholder="https://github.com/owner/repo" /></label>
               <label>完整 commit（40 位）<input value={commit} onChange={e => setCommit(e.target.value)} /></label>
               <label>仓库子目录（可留空）<input value={subdir} onChange={e => setSubdir(e.target.value)} /></label>
@@ -325,6 +335,8 @@ function Workspace() {
                   ["trace", "执行轨迹"],
                   ["patch", "候选补丁"],
                   ["tests", "验收结果"],
+                  ["context", "上下文"],
+                  ["memory", "项目记忆"],
                 ].map(([value, label]) => (
                   <button
                     role="tab"
@@ -375,9 +387,14 @@ function Workspace() {
                           {event.data.reason ? (
                             <p>{String(event.data.reason)}</p>
                           ) : null}
-                          {event.type === "CONTEXT_COMPACTED" && <p>
+                          {event.type === "CONTEXT_COMPACTED" && event.data.strategy !== "structured-deterministic-v1" && <p>
                             本次请求历史由 {String(event.data.before_characters)} 字符缩减到 {String(event.data.after_characters)} 字符；完整轨迹仍保留。
                           </p>}
+                          {event.type === "CONTEXT_COMPACTED" && event.data.strategy === "structured-deterministic-v1" && <p>
+                            已生成结构化状态摘要，当前输入估算 {String(event.data.after_tokens)} token；原始轨迹可回查。
+                          </p>}
+                          {event.type === "CONTEXT_ASSEMBLED" && <p>输入估算 {String(event.data.estimated_input_tokens)} / {String(event.data.input_limit)} token（保守字节估算）。</p>}
+                          {event.type === "INDEX_PUBLISHED" && <p>{String(event.data.scope)} · {String(event.data.chunks)} 个代码片段。</p>}
                           {event.type === "REPOSITORY_READY" && <p>
                             固定版本：{String(event.data.commit)}
                           </p>}
@@ -424,19 +441,31 @@ function Workspace() {
                       <dd>{run.result?.model_calls ?? "完成后汇总"}</dd>
                       <dt>任务</dt><dd>{run.task}</dd>
                       {run.spec && <><dt>仓库版本</dt><dd>{run.spec.source}<br />{run.spec.commit}</dd>
-                        <dt>上下文策略</dt><dd>{run.contextMode === "compact" ? "历史压缩" : "完整历史"}</dd>
+                        <dt>上下文策略</dt><dd>{run.contextMode === "managed" ? "预算、检索与结构化压缩" : run.contextMode === "compact" ? "历史压缩" : "完整历史"}</dd>
                         <dt>修改文件</dt><dd>{run.result?.changed_files?.join(", ") || "等待候选"}</dd>
                         <dt>输入 / 输出 token</dt><dd>{run.result?.usage
                           ? `${run.result.usage.input_tokens} / ${run.result.usage.output_tokens}${run.result.usage_status === "partial" ? "（部分调用）" : run.result.usage_status !== "complete" ? "（覆盖未核实）" : ""}`
                           : ["SUCCEEDED", "FAILED", "CANCELLED", "INTERRUPTED"].includes(run.status) ? "未获得用量记录" : "完成后汇总"}</dd></>}
                     </dl>
                     <div className="fact-note">
-                      当前版本提供仓库执行与验收。记忆、权限审批及
+                      当前版本提供仓库执行、上下文与显式记忆。权限审批及
                       SWE-bench 接入按最终方案继续推进。
                     </div>
                   </aside>
                 </div>
               )}
+              {tab === "memory" && <ProjectContext key={run.id} projectId={run.projectId} runId={run.id} commit={run.spec?.commit} eventId={events.at(-1)?.id} />}
+              {tab === "context" && <div className="result-view">
+                <h3>上下文预算与证据</h3>
+                <p>仅 managed 模式组装代码证据、项目规则和有效记忆。记忆读取：{run.memoryEnabled ? "已启用" : "已关闭"}。</p>
+                {active && run.contextMode === "managed" && <Button variant="outline" onClick={async () => {
+                  try { await api(`/runs/${id}/compact`, {}); setError(""); } catch (e) { setError((e as Error).message); }
+                }}>请求下一步骤压缩</Button>}
+                {events.filter(e => ["CONTEXT_ASSEMBLED", "CONTEXT_COMPACTED", "CONTEXT_USAGE"].includes(e.type)).map(e => <details className="memory-card" key={e.id}>
+                  <summary>{labels[e.type]} · 调用 {String(e.data.call || e.data.at_call || "")}</summary>
+                  <pre>{JSON.stringify(e.data, null, 2)}</pre>
+                </details>)}
+              </div>}
               {tab === "patch" && (
                 <div className="result-view">
                   <h3>

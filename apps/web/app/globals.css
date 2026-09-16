@@ -1,4 +1,9 @@
 @import "tailwindcss";
+.memory-view label { display: block; margin: 12px 0; }
+.memory-view textarea, .memory-view input:not([type=file]) { display: block; width: 100%; border: 1px solid #e2e7ef; border-radius: 8px; padding: 10px; margin-top: 6px; }
+.memory-card { border: 1px solid #e2e7ef; border-radius: 10px; padding: 16px; margin: 14px 0; }
+.memory-card pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 450px; overflow: auto; }
+.memory-actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-top: 12px; }
 :root {
   --ink: #24314a;
   --muted: #7a879c;

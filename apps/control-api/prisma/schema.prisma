@@ -13,6 +13,10 @@ model Run {
   spec Json?
   baselineId String?
   contextMode String @default("full")
+  projectId String?
+  project Project? @relation(fields: [projectId], references: [id])
+  memoryEnabled Boolean @default(false)
+  compactRequested Int @default(0)
   status String @default("QUEUED")
   workerId String?
   generation Int @default(0)
@@ -23,6 +27,55 @@ model Run {
   updatedAt DateTime @updatedAt
   events Event[]
   @@index([status, leaseUntil])
+}
+model Project {
+  id String @id
+  owner String @default("local")
+  source String
+  subdir String
+  createdAt DateTime @default(now())
+  runs Run[]
+  memories Memory[]
+}
+model Memory {
+  id String @id @default(uuid())
+  projectId String
+  project Project @relation(fields: [projectId], references: [id])
+  scope String @default("project")
+  content String
+  sourceRun String
+  evidenceRefs Json
+  baseCommit String
+  validity String @default("active")
+  version Int @default(1)
+  confirmedAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  @@index([projectId, validity])
+}
+model IndexHead {
+  id String @id
+  projectId String
+  commit String
+  scope String
+  embedding String
+  pendingId String?
+  publishedId String?
+  updatedAt DateTime @updatedAt
+  @@index([projectId])
+}
+model IndexBuild {
+  id String @id
+  headId String
+  runId String
+  workerId String
+  generation Int
+  snapshotHash String
+  collection String
+  pointIds Json
+  manifestHash String
+  status String @default("BUILDING")
+  createdAt DateTime @default(now())
+  @@index([headId, status])
 }
 model Event {
   id Int @id @default(autoincrement())

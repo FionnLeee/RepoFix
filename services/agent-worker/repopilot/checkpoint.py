@@ -50,6 +50,7 @@ class AgentState(BaseModel):
     active_seconds: float = Field(ge=0, allow_inf_nan=False)
     consecutive_format_errors: int = Field(ge=0)
     model_cursor: int | None = Field(default=None, ge=-1)
+    context_state: dict = Field(default_factory=dict)
 
 
 class Checkpoint(BaseModel):
@@ -76,7 +77,8 @@ def agent_signature(agent):
         for output in model["outputs"]:
             output.get("extra", {}).pop("timestamp", None)
     # Hash model settings without persisting endpoint credentials or deterministic reference actions.
-    return checksum({"agent": config, "model": model, "context_mode": agent.context_mode})
+    return checksum({"agent": config, "model": model, "context_mode": agent.context_mode,
+                     "context_config": agent.context_manager.config.model_dump() if agent.context_manager else None})
 
 
 class CheckpointStore:
@@ -98,6 +100,7 @@ class CheckpointStore:
             "spec_sha256": checksum(run.get("spec")), "source_sha256": digest(validate_files(source)),
             "image_id": agent.env.container.image.id, "agent_signature": agent_signature(agent),
             "mode": run["mode"], "context_mode": agent.context_mode,
+            "memory_enabled": run.get("memoryEnabled", False),
         }
         return cls(os.getenv("ARTIFACT_ROOT", "runtime/artifacts"), binding, agent.emit)
 
@@ -119,6 +122,7 @@ class CheckpointStore:
             cost=float(agent.cost), active_seconds=max(0., time.time() - agent._start_time),
             consecutive_format_errors=agent.n_consecutive_format_errors,
             model_cursor=agent.model.current_index if isinstance(agent.model, DeterministicModel) else None,
+            context_state=agent.context_manager.state if agent.context_manager else {},
         )
         checkpoint = Checkpoint(
             schema_version=1, id=uuid.uuid4().hex, binding=self.binding, phase=phase,

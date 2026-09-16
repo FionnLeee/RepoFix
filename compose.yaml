@@ -28,7 +28,7 @@ services:
     profiles: [extended]
   qdrant:
     image: qdrant/qdrant:v1.15.4
-    profiles: [extended]
+    ports: ["127.0.0.1:6333:6333"]
     volumes: ["qdrantdata:/qdrant/storage"]
   api:
     build:
@@ -41,12 +41,14 @@ services:
       WORKER_TOKEN: ${WORKER_TOKEN}
       LIVE_ENABLED: ${LIVE_ENABLED:-false}
       BASELINE_CATALOG: /baseline/catalog.json
+      QDRANT_URL: http://qdrant:6333
     volumes:
       - ./runtime/baseline-catalog.json:/baseline/catalog.json:ro
     ports: ["127.0.0.1:3101:3101"]
     depends_on:
       postgres: { condition: service_healthy }
       rabbitmq: { condition: service_healthy }
+      qdrant: { condition: service_started }
     healthcheck:
       test:
         [
@@ -83,10 +85,16 @@ services:
       SANDBOX_IMAGE: python:3.12-slim
       ARTIFACT_ROOT: /artifacts
       REPOSITORY_ROOT: /repositories
+      QDRANT_URL: http://qdrant:6333
+      EMBEDDING_MODEL_DIR: /embedding-model
+      CONTEXT_WINDOW_TOKENS: ${CONTEXT_WINDOW_TOKENS:-16384}
+      CONTEXT_OUTPUT_TOKENS: ${CONTEXT_OUTPUT_TOKENS:-1600}
+      CONTEXT_SAFETY_TOKENS: ${CONTEXT_SAFETY_TOKENS:-1024}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ./runtime/artifacts:/artifacts
       - ./runtime/repositories:/repositories:ro
+      - ./runtime/embedding-model:/embedding-model:ro
     depends_on:
       api: { condition: service_healthy }
 volumes:

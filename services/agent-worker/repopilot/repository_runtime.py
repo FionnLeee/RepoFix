@@ -175,6 +175,7 @@ def execute_repository_run(run, emit, cancelled):
         "task_sha256": hashlib.sha256(run["task"].encode()).hexdigest(),
         "context_mode": run.get("contextMode", "full"), "runner_version": "repository-v1",
     }
+    context_manager = None
     try:
         emit("REPOSITORY_READY", provenance)
         system = SYSTEM.replace("Only pricing.py is accepted as the final source patch. Tests are independently verified.",
@@ -197,6 +198,13 @@ def execute_repository_run(run, emit, cancelled):
                             instance_template="Task: {{task}}",
                             step_limit=20, cost_limit=0, wall_time_limit_seconds=360,
                             output_path=folder / "trajectory.json")
+        if run.get("contextMode") == "managed":
+            from repopilot.context import ContextManager
+            context_manager = ContextManager(run, files, emit, folder)
+            if run["mode"] == "live":
+                model.config.model_kwargs["max_tokens"] = context_manager.config.output
+            agent.context_manager = context_manager
+            sandbox.archive_logs = True
         agent.enable_checkpoints(run, files)
         outcome = agent.run(run["task"] + "\nDevelopment test command: " + spec.testCommand)
         if outcome.get("exit_status") != "Submitted":
@@ -211,6 +219,8 @@ def execute_repository_run(run, emit, cancelled):
         (folder / "candidate.patch").write_text(patch, encoding="utf-8")
         emit("CANDIDATE", {"patch": patch, "changed_files": changed}, "VERIFYING")
     finally:
+        if context_manager:
+            context_manager.close()
         sandbox.close()
     baseline = verify(files, spec, run["id"], cancelled, image_id)
     verified = verify(replayed, spec, run["id"], cancelled, image_id)
@@ -220,9 +230,10 @@ def execute_repository_run(run, emit, cancelled):
                   and baseline["returncode"] != 0 and verified["returncode"] == 0
                   and before["ids"] == after["ids"] and after["successful"] and after["skipped"] == 0)
     provenance.update(model=os.getenv("MODEL_NAME") if run["mode"] == "live" else "deterministic",
-                      temperature=0.2, max_output_tokens=1600, step_limit=20,
+                      temperature=0.2, max_output_tokens=context_manager.config.output if context_manager else 1600, step_limit=20,
                       prompt_sha256=hashlib.sha256(system.encode()).hexdigest(),
-                      compression_strategy="extractive-v1", compression_threshold_characters=3500,
+                      compression_strategy="structured-deterministic-v1" if context_manager else "extractive-v1",
+                      context_config=context_manager.config.model_dump() if context_manager else None,
                       candidate_sha256=digest(replayed), patch_sha256=hashlib.sha256(patch.encode()).hexdigest())
     (folder / "manifest.json").write_text(json.dumps({"spec": spec.model_dump(), "task": run["task"],
                                                       "provenance": provenance}), encoding="utf-8")
