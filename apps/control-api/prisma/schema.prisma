@@ -1,0 +1,41 @@
+generator client {
+  provider = "prisma-client-js"
+}
+datasource db {
+  provider = "postgresql"
+  url = env("DATABASE_URL")
+}
+model Run {
+  id String @id @default(uuid())
+  requestKey String @unique
+  task String
+  mode String
+  status String @default("QUEUED")
+  workerId String?
+  generation Int @default(0)
+  leaseUntil DateTime?
+  cancelRequested Boolean @default(false)
+  result Json?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  events Event[]
+  @@index([status, leaseUntil])
+}
+model Event {
+  id Int @id @default(autoincrement())
+  runId String
+  run Run @relation(fields: [runId], references: [id])
+  key String
+  type String
+  data Json
+  createdAt DateTime @default(now())
+  @@unique([runId, key])
+  @@index([runId, id])
+}
+model Outbox {
+  id Int @id @default(autoincrement())
+  runId String
+  publishedAt DateTime?
+  createdAt DateTime @default(now())
+  @@index([publishedAt, id])
+}

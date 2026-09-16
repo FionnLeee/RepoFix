@@ -1,0 +1,11 @@
+.git
+**/node_modules
+**/.next
+**/dist
+.venv
+.env
+runtime
+**/__pycache__
+vendor/mini-swe-agent/.git
+vendor/mini-swe-agent/docs
+vendor/mini-swe-agent/tests

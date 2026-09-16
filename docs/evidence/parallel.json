@@ -1,0 +1,15 @@
+{
+  "runs": [
+    {
+      "id": "f73c2b2f-c2a7-42a9-943a-f75db5a7f2d1",
+      "status": "SUCCEEDED",
+      "workerId": "861ef917e1fa"
+    },
+    {
+      "id": "9c236a69-09cb-4ad2-b6e7-fdc50576cec5",
+      "status": "SUCCEEDED",
+      "workerId": "99e3ae1f0117"
+    }
+  ],
+  "distinct_workers": 2
+}

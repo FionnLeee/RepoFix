@@ -1,0 +1,90 @@
+name: repopilot
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: repopilot
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?run configure first}
+      POSTGRES_DB: repopilot
+    volumes: ["pgdata:/var/lib/postgresql/data"]
+    healthcheck:
+      test: [CMD-SHELL, "pg_isready -U repopilot"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+  rabbitmq:
+    image: rabbitmq:4.1-alpine
+    environment:
+      RABBITMQ_DEFAULT_USER: repopilot
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:?run configure first}
+    volumes: ["rabbitdata:/var/lib/rabbitmq"]
+    healthcheck:
+      test: [CMD, rabbitmq-diagnostics, -q, ping]
+      interval: 5s
+      timeout: 10s
+      retries: 30
+  redis:
+    image: redis:7.4-alpine
+    profiles: [extended]
+  qdrant:
+    image: qdrant/qdrant:v1.15.4
+    profiles: [extended]
+    volumes: ["qdrantdata:/qdrant/storage"]
+  api:
+    build:
+      context: .
+      dockerfile: infra/node.Dockerfile
+      target: api
+    environment:
+      DATABASE_URL: postgresql://repopilot:${POSTGRES_PASSWORD}@postgres:5432/repopilot
+      AMQP_URL: amqp://repopilot:${RABBITMQ_PASSWORD}@rabbitmq:5672
+      WORKER_TOKEN: ${WORKER_TOKEN}
+      LIVE_ENABLED: ${LIVE_ENABLED:-false}
+    ports: ["127.0.0.1:3101:3101"]
+    depends_on:
+      postgres: { condition: service_healthy }
+      rabbitmq: { condition: service_healthy }
+    healthcheck:
+      test:
+        [
+          CMD,
+          node,
+          -e,
+          "fetch('http://localhost:3101/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+  web:
+    build:
+      context: .
+      dockerfile: infra/node.Dockerfile
+      target: web
+    ports: ["127.0.0.1:3100:3100"]
+    environment:
+      API_URL: http://api:3101
+      NEXT_TELEMETRY_DISABLED: "1"
+    depends_on:
+      api: { condition: service_healthy }
+  worker:
+    build:
+      context: .
+      dockerfile: infra/worker.Dockerfile
+    environment:
+      AMQP_URL: amqp://repopilot:${RABBITMQ_PASSWORD}@rabbitmq:5672
+      CONTROL_API_URL: http://api:3101
+      WORKER_TOKEN: ${WORKER_TOKEN}
+      MODEL_NAME: ${MODEL_NAME:-}
+      MODEL_BASE_URL: ${MODEL_BASE_URL:-}
+      OPENAI_API_KEY: ${MODEL_API_KEY:-}
+      SANDBOX_IMAGE: python:3.12-slim
+      ARTIFACT_ROOT: /artifacts
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./runtime/artifacts:/artifacts
+    depends_on:
+      api: { condition: service_healthy }
+volumes:
+  pgdata:
+  rabbitdata:
+  qdrantdata:

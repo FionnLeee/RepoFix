@@ -1,0 +1,212 @@
+{
+  "mode": "demo",
+  "checks": [
+    "health",
+    "six_concurrent_creates_one_run",
+    "worker_auth_required",
+    "unknown_fields_rejected"
+  ],
+  "started_at": 1789543780.2547095,
+  "run": {
+    "id": "8b55afd4-c9a8-4257-bf85-2b30c7ba7ec4",
+    "requestKey": "smoke-4bf2d28d-b291-418f-a55b-0e5a430bfd6a",
+    "task": "修复 pricing.py 中 discounted_total：百分比折扣应按百分比计算，结果保留两位小数，并拒绝小于 0 或大于 100 的折扣。运行开发测试后提交补丁。",
+    "mode": "demo",
+    "status": "SUCCEEDED",
+    "workerId": "861ef917e1fa",
+    "generation": 1,
+    "leaseUntil": "2026-09-16T07:30:37.713Z",
+    "cancelRequested": false,
+    "result": {
+      "mode": "demo",
+      "patch": "--- a/pricing.py\n+++ b/pricing.py\n@@ -1,2 +1,4 @@\n def discounted_total(price, quantity, discount):\n-    return price * quantity - discount\n+    if not 0 <= discount <= 100:\n+        raise ValueError(\"discount must be between 0 and 100\")\n+    return round(price * quantity * (1 - discount / 100), 2)\n",
+      "usage": {
+        "input_tokens": 0,
+        "output_tokens": 0
+      },
+      "cost_usd": 0,
+      "model_calls": 5,
+      "verification": {
+        "output": "test_excess_discount (test_pricing.IndependentTests.test_excess_discount) ... ok\ntest_full_discount (test_pricing.IndependentTests.test_full_discount) ... ok\ntest_negative_discount (test_pricing.IndependentTests.test_negative_discount) ... ok\ntest_percentage (test_pricing.IndependentTests.test_percentage) ... ok\ntest_rounding (test_pricing.IndependentTests.test_rounding) ... ok\ntest_zero_discount (test_pricing.IndependentTests.test_zero_discount) ... ok\n\n----------------------------------------------------------------------\nRan 6 tests in 0.000s\n\nOK\n",
+        "passed": true,
+        "returncode": 0,
+        "baseline_returncode": 1
+      },
+      "artifact_path": "8b55afd4-c9a8-4257-bf85-2b30c7ba7ec4/",
+      "upstream_commit": "04d809ceab9df28f9adaed044884180159172930"
+    },
+    "createdAt": "2026-09-16T07:29:43.329Z",
+    "updatedAt": "2026-09-16T07:29:52.714Z",
+    "events": [
+      {
+        "id": 25,
+        "runId": "8b55afd4-c9a8-4257-bf85-2b30c7ba7ec4",
+        "key": "created",
+        "type": "QUEUED",
+        "data": {
+          "mode": "demo",
+          "fixture": "pricing-percent-v1"
+        },
+        "createdAt": "2026-09-16T07:29:43.330Z"
+      },
+      {
+        "id": 26,
+        "runId": "8b55afd4-c9a8-4257-bf85-2b30c7ba7ec4",
+        "key": "claimed-1",
+        "type": "RUNNING",
+        "data": {
+          "workerId": "861ef917e1fa",
+          "generation": 1
+        },
+        "createdAt": "2026-09-16T07:29:48.391Z"
+      },
+      {
+        "id": 27,
+        "runId": "8b55afd4-c9a8-4257-bf85-2b30c7ba7ec4",
+        "key": "94e3cdbd-39d4-4a30-955f-c0f66f73843b",
+        "type": "MODEL_CALL",
+        "data": {
+          "call": 1,
+          "input_characters": 632
+        },
+        "createdAt": "2026-09-16T07:29:49.171Z"
+      },
+      {
+        "id": 28,
+        "runId": "8b55afd4-c9a8-4257-bf85-2b30c7ba7ec4",
+        "key": "95a30a43-bda6-4d0f-8d14-7571b56da726",
+        "type": "TOOL_RESULT",
+        "data": {
+          "output": "def discounted_total(price, quantity, discount):\n    return price * quantity - discount\n",
+          "command": "cat pricing.py",
+          "returncode": 0,
+          "duration_ms": 128,
+          "exception_info": ""
+        },
+        "createdAt": "2026-09-16T07:29:49.313Z"
+      },
+      {
+        "id": 29,
+        "runId": "8b55afd4-c9a8-4257-bf85-2b30c7ba7ec4",
+        "key": "7a6eb4c4-a033-4664-af56-9480f6ce84a3",
+        "type": "MODEL_CALL",
+        "data": {
+          "call": 2,
+          "input_characters": 771
+        },
+        "createdAt": "2026-09-16T07:29:49.345Z"
+      },
+      {
+        "id": 30,
+        "runId": "8b55afd4-c9a8-4257-bf85-2b30c7ba7ec4",
+        "key": "ea580e17-f6b9-40c3-8973-6d67709ca2f3",
+        "type": "TOOL_RESULT",
+        "data": {
+          "output": "test_invalid (test_pricing.PricingTests.test_invalid) ... FAIL\ntest_percentage (test_pricing.PricingTests.test_percentage) ... FAIL\n\n======================================================================\nFAIL: test_invalid (test_pricing.PricingTests.test_invalid)\n----------------------------------------------------------------------\nTraceback (most recent call last):\n  File \"/workspace/test_pricing.py\", line 8, in test_invalid\n    with self.assertRaises(ValueError):\n         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nAssertionError: ValueError not raised\n\n======================================================================\nFAIL: test_percentage (test_pricing.PricingTests.test_percentage)\n----------------------------------------------------------------------\nTraceback (most recent call last):\n  File \"/workspace/test_pricing.py\", line 6, in test_percentage\n    self.assertEqual(discounted_total(100, 2, 20), 160)\nAssertionError: 180 != 160\n\n----------------------------------------------------------------------\nRan 2 tests in 0.001s\n\nFAILED (failures=2)\n",
+          "command": "python -m unittest -v",
+          "returncode": 1,
+          "duration_ms": 332,
+          "exception_info": ""
+        },
+        "createdAt": "2026-09-16T07:29:49.689Z"
+      },
+      {
+        "id": 31,
+        "runId": "8b55afd4-c9a8-4257-bf85-2b30c7ba7ec4",
+        "key": "f188c9d2-0098-4a79-b286-49a5cdc98cd4",
+        "type": "MODEL_CALL",
+        "data": {
+          "call": 3,
+          "input_characters": 1876
+        },
+        "createdAt": "2026-09-16T07:29:49.715Z"
+      },
+      {
+        "id": 32,
+        "runId": "8b55afd4-c9a8-4257-bf85-2b30c7ba7ec4",
+        "key": "60aa0bdd-e7fe-4d44-9c9c-2843ded07fd6",
+        "type": "TOOL_RESULT",
+        "data": {
+          "output": "",
+          "command": "cat > pricing.py <<'PY'\ndef discounted_total(price, quantity, discount):\n    if not 0 <= discount <= 100:\n        raise ValueError(\"discount must be between 0 and 100\")\n    return round(price * quantity * (1 - discount / 100), 2)\nPY",
+          "returncode": 0,
+          "duration_ms": 106,
+          "exception_info": ""
+        },
+        "createdAt": "2026-09-16T07:29:49.833Z"
+      },
+      {
+        "id": 33,
+        "runId": "8b55afd4-c9a8-4257-bf85-2b30c7ba7ec4",
+        "key": "aa064ace-c8b0-4868-afb3-099f13dc3230",
+        "type": "MODEL_CALL",
+        "data": {
+          "call": 4,
+          "input_characters": 1927
+        },
+        "createdAt": "2026-09-16T07:29:49.861Z"
+      },
+      {
+        "id": 34,
+        "runId": "8b55afd4-c9a8-4257-bf85-2b30c7ba7ec4",
+        "key": "18ab6b61-22b2-4fb8-8fc7-31ac2f8ef6b7",
+        "type": "TOOL_RESULT",
+        "data": {
+          "output": "test_invalid (test_pricing.PricingTests.test_invalid) ... ok\ntest_percentage (test_pricing.PricingTests.test_percentage) ... ok\n\n----------------------------------------------------------------------\nRan 2 tests in 0.000s\n\nOK\n",
+          "command": "python -m unittest -v",
+          "returncode": 0,
+          "duration_ms": 565,
+          "exception_info": ""
+        },
+        "createdAt": "2026-09-16T07:29:50.431Z"
+      },
+      {
+        "id": 35,
+        "runId": "8b55afd4-c9a8-4257-bf85-2b30c7ba7ec4",
+        "key": "a8684dab-5ef0-459f-86ed-216ca6fcb2c8",
+        "type": "MODEL_CALL",
+        "data": {
+          "call": 5,
+          "input_characters": 2204
+        },
+        "createdAt": "2026-09-16T07:29:50.458Z"
+      },
+      {
+        "id": 36,
+        "runId": "8b55afd4-c9a8-4257-bf85-2b30c7ba7ec4",
+        "key": "16a2d972-d7e7-49c8-ba91-c77ab6204f0e",
+        "type": "CANDIDATE",
+        "data": {
+          "patch": "--- a/pricing.py\n+++ b/pricing.py\n@@ -1,2 +1,4 @@\n def discounted_total(price, quantity, discount):\n-    return price * quantity - discount\n+    if not 0 <= discount <= 100:\n+        raise ValueError(\"discount must be between 0 and 100\")\n+    return round(price * quantity * (1 - discount / 100), 2)\n"
+        },
+        "createdAt": "2026-09-16T07:29:50.759Z"
+      },
+      {
+        "id": 37,
+        "runId": "8b55afd4-c9a8-4257-bf85-2b30c7ba7ec4",
+        "key": "e6a0dd4f-1c8a-4b0c-b903-f193206ff201",
+        "type": "SUCCEEDED",
+        "data": {
+          "mode": "demo",
+          "patch": "--- a/pricing.py\n+++ b/pricing.py\n@@ -1,2 +1,4 @@\n def discounted_total(price, quantity, discount):\n-    return price * quantity - discount\n+    if not 0 <= discount <= 100:\n+        raise ValueError(\"discount must be between 0 and 100\")\n+    return round(price * quantity * (1 - discount / 100), 2)\n",
+          "usage": {
+            "input_tokens": 0,
+            "output_tokens": 0
+          },
+          "cost_usd": 0,
+          "model_calls": 5,
+          "verification": {
+            "output": "test_excess_discount (test_pricing.IndependentTests.test_excess_discount) ... ok\ntest_full_discount (test_pricing.IndependentTests.test_full_discount) ... ok\ntest_negative_discount (test_pricing.IndependentTests.test_negative_discount) ... ok\ntest_percentage (test_pricing.IndependentTests.test_percentage) ... ok\ntest_rounding (test_pricing.IndependentTests.test_rounding) ... ok\ntest_zero_discount (test_pricing.IndependentTests.test_zero_discount) ... ok\n\n----------------------------------------------------------------------\nRan 6 tests in 0.000s\n\nOK\n",
+            "passed": true,
+            "returncode": 0,
+            "baseline_returncode": 1
+          },
+          "artifact_path": "8b55afd4-c9a8-4257-bf85-2b30c7ba7ec4/",
+          "upstream_commit": "04d809ceab9df28f9adaed044884180159172930"
+        },
+        "createdAt": "2026-09-16T07:29:52.713Z"
+      }
+    ]
+  },
+  "duration_seconds": 14.45
+}

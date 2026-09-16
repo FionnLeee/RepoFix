@@ -1,0 +1,23 @@
+[project]
+name = "repopilot-worker"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = ["mini-swe-agent", "aio-pika>=9.5,<10", "docker>=7.1,<8", "httpx>=0.28,<1"]
+
+[tool.uv.sources]
+mini-swe-agent = { path = "vendor/mini-swe-agent" }
+
+[dependency-groups]
+dev = ["pytest>=8,<10", "ruff>=0.12"]
+
+[tool.pytest.ini_options]
+pythonpath = ["services/agent-worker"]
+testpaths = ["services/agent-worker/tests"]
+markers = ["docker: real local Docker sandbox integration"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I"]
