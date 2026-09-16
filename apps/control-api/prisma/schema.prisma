@@ -10,6 +10,9 @@ model Run {
   requestKey String @unique
   task String
   mode String
+  spec Json?
+  baselineId String?
+  contextMode String @default("full")
   status String @default("QUEUED")
   workerId String?
   generation Int @default(0)

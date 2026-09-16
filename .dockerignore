@@ -5,6 +5,8 @@
 .venv
 .env
 runtime
+docs
+AGENTS.md
 **/__pycache__
 vendor/mini-swe-agent/.git
 vendor/mini-swe-agent/docs

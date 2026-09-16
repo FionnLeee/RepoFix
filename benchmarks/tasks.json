@@ -1,0 +1,53 @@
+[
+  {
+    "id": "checkout",
+    "title": "订单优惠与运费：跨模块金额修复",
+    "task": "修复 money.py 和 checkout.py。discounted_total 按百分比优惠，范围 0..100，结果 round 到两位。checkout 根据优惠后的总金额判断运费：金额 >= 150 免运费，否则加 10。结算总额保留两位小数。保留函数签名，不改开发测试。",
+    "files": {
+      "money.py": "def discounted_total(price, quantity, discount):\n    return price * quantity - discount\n",
+      "checkout.py": "from money import discounted_total\n\ndef checkout(price, quantity, discount):\n    subtotal = discounted_total(price, quantity, discount)\n    shipping = 0 if price * quantity >= 150 else 10\n    return subtotal + shipping\n",
+      "test_dev.py": "from checkout import checkout\nimport unittest\n\nclass Checks(unittest.TestCase):\n    def test_checkout(self):\n        self.assertEqual(checkout(100, 2, 20), 160)\n    def test_shipping(self):\n        self.assertEqual(checkout(80, 2, 20), 138)\n"
+    },
+    "reference": {
+      "money.py": "def discounted_total(price, quantity, discount):\n    if not 0 <= discount <= 100:\n        raise ValueError(\"discount out of range\")\n    return round(price * quantity * (1 - discount / 100), 2)\n",
+      "checkout.py": "from money import discounted_total\n\ndef checkout(price, quantity, discount):\n    subtotal = discounted_total(price, quantity, discount)\n    return round(subtotal + (0 if subtotal >= 150 else 10), 2)\n"
+    },
+    "verification": {
+      "test_acceptance.py": "from money import discounted_total\nfrom checkout import checkout\nimport unittest\n\nclass Checks(unittest.TestCase):\n    def test_percentage(self):\n        self.assertEqual(discounted_total(100, 2, 20), 160)\n    def test_shipping_after_discount(self):\n        self.assertEqual(checkout(80, 2, 20), 138)\n    def test_threshold(self):\n        self.assertEqual(checkout(75, 2, 0), 150)\n    def test_rounding(self):\n        self.assertEqual(checkout(19.99, 3, 15), 60.97)\n    def test_invalid(self):\n        with self.assertRaises(ValueError): discounted_total(10, 1, 101)\n        with self.assertRaises(ValueError): discounted_total(10, 1, -1)\n"
+    }
+  },
+  {
+    "id": "pagination",
+    "title": "分页边界与切片：跨模块索引修复",
+    "task": "修复 paging.py 与 service.py。bounds(page,size)：page 小于 1 时按 1，size 必须在 1..100 否则 ValueError；返回左闭右开区间 ((page-1)*size, page*size)。paginate(items,page,size) 返回 items 切片和总页数 pages；总页数向上取整，空列表为 0。保留接口，不改测试。",
+    "files": {
+      "paging.py": "def bounds(page, size):\n    return page * size, (page + 1) * size\n",
+      "service.py": "from paging import bounds\n\ndef paginate(items, page, size):\n    start, end = bounds(page, size)\n    return {\"items\": items[start:end], \"pages\": len(items) // size}\n",
+      "test_dev.py": "from service import paginate\nimport unittest\n\nclass Checks(unittest.TestCase):\n    def test_first(self):\n        self.assertEqual(paginate([1, 2, 3], 1, 2), {\"items\": [1, 2], \"pages\": 2})\n"
+    },
+    "reference": {
+      "paging.py": "def bounds(page, size):\n    if not 1 <= size <= 100:\n        raise ValueError(\"size out of range\")\n    page = max(1, page)\n    return (page - 1) * size, page * size\n",
+      "service.py": "from paging import bounds\n\ndef paginate(items, page, size):\n    start, end = bounds(page, size)\n    return {\"items\": items[start:end], \"pages\": (len(items) + size - 1) // size}\n"
+    },
+    "verification": {
+      "test_acceptance.py": "from paging import bounds\nfrom service import paginate\nimport unittest\n\nclass Checks(unittest.TestCase):\n    def test_first(self):\n        self.assertEqual(paginate([1, 2, 3], 1, 2), {\"items\": [1, 2], \"pages\": 2})\n    def test_last(self):\n        self.assertEqual(paginate([1, 2, 3], 2, 2), {\"items\": [3], \"pages\": 2})\n    def test_normalize(self):\n        self.assertEqual(bounds(-1, 2), (0, 2))\n    def test_empty(self):\n        self.assertEqual(paginate([], 1, 2), {\"items\": [], \"pages\": 0})\n    def test_invalid(self):\n        with self.assertRaises(ValueError): bounds(1, 0)\n        with self.assertRaises(ValueError): bounds(1, 101)\n"
+    }
+  },
+  {
+    "id": "configuration",
+    "title": "配置转换与默认值：跨模块类型修复",
+    "task": "修复 parsing.py 与 settings.py。parse_bool 对字符串忽略大小写和首尾空格，true/1/yes 返回 True，false/0/no 返回 False，其余 ValueError。load(mapping) 的 enabled 必须经过 parse_bool，缺省 false；timeout 缺省 30，转成整数且必须大于 0，否则 ValueError。不要用字符串真值代替布尔解析。保留接口，不改测试。",
+    "files": {
+      "parsing.py": "def parse_bool(value):\n    return bool(value)\n",
+      "settings.py": "def load(mapping):\n    return {\"enabled\": bool(mapping.get(\"enabled\", \"false\")), \"timeout\": mapping.get(\"timeout\", 30)}\n",
+      "test_dev.py": "from parsing import parse_bool\nfrom settings import load\nimport unittest\n\nclass Checks(unittest.TestCase):\n    def test_false(self):\n        self.assertFalse(parse_bool(\"false\"))\n    def test_defaults(self):\n        self.assertEqual(load({}), {\"enabled\": False, \"timeout\": 30})\n"
+    },
+    "reference": {
+      "parsing.py": "def parse_bool(value):\n    value = value.strip().lower()\n    if value in (\"true\", \"1\", \"yes\"):\n        return True\n    if value in (\"false\", \"0\", \"no\"):\n        return False\n    raise ValueError(\"invalid boolean\")\n",
+      "settings.py": "from parsing import parse_bool\n\ndef load(mapping):\n    timeout = int(mapping.get(\"timeout\", 30))\n    if timeout <= 0:\n        raise ValueError(\"timeout must be positive\")\n    return {\"enabled\": parse_bool(mapping.get(\"enabled\", \"false\")), \"timeout\": timeout}\n"
+    },
+    "verification": {
+      "test_acceptance.py": "from parsing import parse_bool\nfrom settings import load\nimport unittest\n\nclass Checks(unittest.TestCase):\n    def test_false_values(self):\n        for value in (\"false\", \" NO \", \"0\"): self.assertFalse(parse_bool(value))\n    def test_true_values(self):\n        for value in (\"true\", \" YES \", \"1\"): self.assertTrue(parse_bool(value))\n    def test_default(self):\n        self.assertEqual(load({}), {\"enabled\": False, \"timeout\": 30})\n    def test_converted(self):\n        self.assertEqual(load({\"enabled\": \"false\", \"timeout\": \"12\"}), {\"enabled\": False, \"timeout\": 12})\n    def test_invalid(self):\n        with self.assertRaises(ValueError): parse_bool(\"maybe\")\n        with self.assertRaises(ValueError): load({\"timeout\": \"0\"})\n        with self.assertRaises(ValueError): load({\"timeout\": \"bad\"})\n"
+    }
+  }
+]

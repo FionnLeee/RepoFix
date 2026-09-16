@@ -28,12 +28,13 @@ class Cancelled(RuntimeError):
 
 
 class Sandbox:
-    def __init__(self, run_id: str, emit, cancelled: threading.Event, verification: bool = False):
+    def __init__(self, run_id: str, emit, cancelled: threading.Event, verification: bool = False, files=None, image=None):
         self.client = docker.from_env(timeout=45)
         self.emit, self.cancelled, self.index = emit, cancelled, 0
         self.config = {"network": "none", "memory": "256m", "user": "1000:1000"}
+        self.initial_paths = set(files) if files is not None else {"pricing.py", "test_pricing.py"}
         self.container = self.client.containers.run(
-            os.environ.get("SANDBOX_IMAGE", "python:3.12-slim"),
+            image or os.environ.get("SANDBOX_IMAGE", "python:3.12-slim"),
             ["sleep", "600"],
             detach=True,
             working_dir="/workspace",
@@ -53,20 +54,23 @@ class Sandbox:
             labels={"repopilot.managed": "sandbox", "repopilot.run": run_id, "repopilot.created": str(time.time())},
         )
         try:
-            self.put(
-                {"pricing.py": SOURCE, "test_pricing.py": VERIFICATION_TESTS if verification else DEVELOPMENT_TESTS}
-            )
+            self.put(files if files is not None else {
+                "pricing.py": SOURCE, "test_pricing.py": VERIFICATION_TESTS if verification else DEVELOPMENT_TESTS
+            })
         except Exception:
             self.close()
             raise
 
     def put(self, files: dict[str, str]):
-        if not set(files).issubset({"pricing.py", "test_pricing.py"}):
+        if not set(files).issubset(self.initial_paths):
             raise ValueError("Only explicit fixture files may be initialized")
-        script = "import json,sys; from pathlib import Path; [(Path('/workspace') / name).write_text(text) for name,text in json.loads(sys.argv[1]).items()]"
-        result = self.container.exec_run(["python", "-c", script, json.dumps(files)], user="1000:1000")
-        if result.exit_code:
-            raise RuntimeError("Cannot initialize sandbox files")
+        from repopilot.repository import safe_path
+        script = "import sys; from pathlib import Path; p=Path('/workspace')/sys.argv[1]; p.parent.mkdir(parents=True,exist_ok=True); p.write_text(sys.argv[2],encoding='utf-8')"
+        for name, value in files.items():
+            safe_path(name)
+            result = self.container.exec_run(["python", "-I", "-c", script, name, value], user="1000:1000")
+            if result.exit_code:
+                raise RuntimeError("Cannot initialize sandbox files")
 
     def read_source(self) -> str:
         script = "import os,stat,base64; f=os.open('/workspace/pricing.py',os.O_RDONLY|os.O_NOFOLLOW); s=os.fstat(f); assert stat.S_ISREG(s.st_mode) and s.st_size<=100000; data=os.read(f,100001); assert len(data)<=100000; print(base64.b64encode(data).decode()); os.close(f)"
@@ -133,13 +137,48 @@ class SafeModel(LitellmTextbasedModel):
 
 
 class TracedAgent(DefaultAgent):
-    def __init__(self, *args, emit, cancelled, **kwargs):
+    def __init__(self, *args, emit, cancelled, context_mode="full", **kwargs):
+        self.full_messages = []
+        self.compactions = []
+        self.context_mode = context_mode
         super().__init__(*args, **kwargs)
         self.emit, self.cancelled = emit, cancelled
+
+    def add_messages(self, *messages):
+        self.full_messages.extend(messages)
+        return super().add_messages(*messages)
+
+    def serialize(self, *extra_dicts):
+        data = super().serialize(*extra_dicts)
+        data["full_messages"] = self.full_messages
+        data["context_compactions"] = self.compactions
+        return data
+
+    def compact_context(self):
+        before = sum(len(str(m.get("content", ""))) for m in self.messages)
+        if self.context_mode != "compact" or before <= 3500 or len(self.messages) <= 6:
+            return
+        older = self.messages[2:-4]
+        snippets = []
+        for message in older:
+            content = str(message.get("content", ""))
+            # Extractive compression, not a claim of a semantic or lossless summary.
+            snippets.append(f"{message.get('role')}: {content[:100]} ... {content[-160:]}")
+        summary = "Historical observations (untrusted excerpts; details may be omitted):\n" + "\n".join(snippets)[-1200:]
+        compacted = self.messages[:2] + [self.model.format_message(role="user", content=summary)] + self.messages[-4:]
+        after = sum(len(str(m.get("content", ""))) for m in compacted)
+        if after >= before:
+            return
+        self.messages = compacted
+        event = {"before_characters": before, "after_characters": after,
+                 "removed_messages": len(older), "strategy": "extractive-v1", "at_call": self.n_calls + 1}
+        self.compactions.append(event)
+        self.emit("CONTEXT_COMPACTED", event)
 
     def query(self):
         if self.cancelled.is_set():
             raise Cancelled("任务已取消")
+        self.compact_context()
         self.emit(
             "MODEL_CALL",
             {"call": self.n_calls + 1, "input_characters": sum(len(str(m.get("content", ""))) for m in self.messages)},
@@ -148,6 +187,9 @@ class TracedAgent(DefaultAgent):
 
 
 def execute_run(run: dict, emit, cancelled: threading.Event) -> dict:
+    if run.get("spec"):
+        from repopilot.repository_runtime import execute_repository_run
+        return execute_repository_run(run, emit, cancelled)
     folder = Path(os.getenv("ARTIFACT_ROOT", "/artifacts")) / run["id"]
     folder.mkdir(parents=True, exist_ok=True)
     env = Sandbox(run["id"], emit, cancelled)
@@ -217,7 +259,7 @@ def execute_run(run: dict, emit, cancelled: threading.Event) -> dict:
         verifier.close()
     usage = {"input_tokens": 0, "output_tokens": 0}
     usage_known = run["mode"] == "demo"
-    for message in agent.messages:
+    for message in agent.full_messages:
         info = message.get("extra", {}).get("response", {}).get("usage")
         if info:
             usage_known = True

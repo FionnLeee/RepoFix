@@ -40,6 +40,9 @@ services:
       AMQP_URL: amqp://repopilot:${RABBITMQ_PASSWORD}@rabbitmq:5672
       WORKER_TOKEN: ${WORKER_TOKEN}
       LIVE_ENABLED: ${LIVE_ENABLED:-false}
+      BASELINE_CATALOG: /baseline/catalog.json
+    volumes:
+      - ./runtime/baseline-catalog.json:/baseline/catalog.json:ro
     ports: ["127.0.0.1:3101:3101"]
     depends_on:
       postgres: { condition: service_healthy }
@@ -79,9 +82,11 @@ services:
       OPENAI_API_KEY: ${MODEL_API_KEY:-}
       SANDBOX_IMAGE: python:3.12-slim
       ARTIFACT_ROOT: /artifacts
+      REPOSITORY_ROOT: /repositories
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ./runtime/artifacts:/artifacts
+      - ./runtime/repositories:/repositories:ro
     depends_on:
       api: { condition: service_healthy }
 volumes:

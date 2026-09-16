@@ -33,6 +33,9 @@ type Run = {
   task: string;
   status: string;
   workerId: string | null;
+  baselineId?: string;
+  contextMode?: string;
+  spec?: { source: string; commit: string; subdir: string };
   createdAt: string;
   events: Event[];
   result?: {
@@ -42,6 +45,8 @@ type Run = {
     artifact_path?: string;
     error?: string;
     usage?: { input_tokens: number; output_tokens: number };
+    changed_files?: string[];
+    provenance?: { commit: string; source_sha256: string; image_id: string; context_mode: string };
   };
 };
 const labels: Record<string, string> = {
@@ -57,6 +62,8 @@ const labels: Record<string, string> = {
   CANDIDATE: "生成候选补丁",
   CANCEL_REQUESTED: "已请求取消",
   HEARTBEAT: "执行保持连接",
+  REPOSITORY_READY: "仓库快照已固定",
+  CONTEXT_COMPACTED: "已压缩历史上下文",
 };
 async function api<T>(path: string, body?: unknown): Promise<T> {
   const res = await fetch(
@@ -83,7 +90,20 @@ function Workspace() {
     [selected, setSelected] = useState<string>(),
     [tab, setTab] = useState("trace"),
     [error, setError] = useState(""),
+    [taskKind, setTaskKind] = useState("checkout"),
+    [contextMode, setContextMode] = useState("full"),
+    [source, setSource] = useState(""),
+    [commit, setCommit] = useState(""),
+    [subdir, setSubdir] = useState(""),
+    [taskText, setTaskText] = useState(""),
+    [paths, setPaths] = useState(""),
+    [testCommand, setTestCommand] = useState("python -m unittest discover -v"),
+    [verification, setVerification] = useState("import unittest\n\nclass Acceptance(unittest.TestCase):\n    def test_behavior(self):\n        # 替换为实际业务断言\n        self.fail('请填写独立验收测试')\n"),
     [busy, setBusy] = useState(false);
+  const baselines = useQuery({
+    queryKey: ["baseline-tasks"],
+    queryFn: () => api<{ id: string; title: string; task: string; spec: { commit: string } }[]>("/baseline-tasks"),
+  });
   useEffect(() => {
     const initial = new URLSearchParams(window.location.search).get("run");
     if (initial && /^[0-9a-f-]{36}$/.test(initial)) setSelected(initial);
@@ -121,6 +141,11 @@ function Workspace() {
       const run = await api<Run>("/runs", {
         mode,
         requestKey: crypto.randomUUID(),
+        ...(taskKind === "legacy" ? {} : taskKind === "custom" ? {
+          task: taskText, contextMode,
+          spec: { source, commit, subdir, allowedPaths: paths.split(",").map(p => p.trim()).filter(Boolean),
+            testCommand, verificationFiles: { "test_acceptance.py": verification } },
+        } : { baselineId: taskKind, contextMode }),
       });
       setSelected(run.id);
       setTab("trace");
@@ -169,7 +194,7 @@ function Workspace() {
             >
               <span className={`dot ${r.status.toLowerCase()}`} />
               <span>
-                修复折扣计算
+                {r.baselineId || (r.spec ? "仓库修复" : "折扣示例")}
                 <small>
                   {r.mode === "live" ? "真实模型" : "确定性演示"} ·{" "}
                   {new Date(r.createdAt).toLocaleTimeString("zh-CN", {
@@ -191,7 +216,7 @@ function Workspace() {
       <main>
         <header className="topbar">
           <span>
-            工作空间 <ChevronRight size={13} /> pricing-example
+            工作空间 <ChevronRight size={13} /> 仓库修复与基线
           </span>
           <span className="connection">
             <i className={health.isSuccess ? "online" : ""} />
@@ -205,7 +230,7 @@ function Workspace() {
               <h1>从问题到可验证的补丁</h1>
               <p>查看 Agent 的每一步操作，用独立测试检查最终结果。</p>
             </div>
-            <span className="phase">首轮部署 · M0 / M1</span>
+            <span className="phase">固定版本 · 多文件验收</span>
           </div>
           <div className="task-brief">
             <div className="task-icon">
@@ -213,17 +238,16 @@ function Workspace() {
             </div>
             <div className="brief-copy">
               <div className="repo-tag">
-                pricing-example <span>Python</span>
+                Repository tasks <span>Python</span>
               </div>
-              <h2>修复百分比折扣与输入边界</h2>
+              <h2>选择一个可复现的修复任务</h2>
               <p>
-                将 20%
-                折扣正确应用于订单总额，保留两位小数，并拒绝超出范围的折扣。
+                固定仓库版本，限制修改范围，在干净副本中重新应用补丁并验收。
               </p>
             </div>
             <div className="task-actions">
               <Button
-                disabled={busy}
+                disabled={busy || taskKind === "custom"}
                 onClick={() => create("demo")}
                 variant="outline"
               >
@@ -243,8 +267,32 @@ function Workspace() {
               </Button>
             </div>
           </div>
+          <div className="repository-form">
+            <label>任务来源<select value={taskKind} onChange={e => setTaskKind(e.target.value)}>
+              {baselines.data?.map(t => <option key={t.id} value={t.id}>{t.title}</option>)}
+              <option value="custom">指定 Git 仓库</option>
+              <option value="legacy">原始单文件折扣示例</option>
+            </select></label>
+            {taskKind !== "legacy" && <label>上下文策略<select value={contextMode} onChange={e => setContextMode(e.target.value)}>
+              <option value="full">完整历史（基线）</option>
+              <option value="compact">历史压缩（对照实验）</option>
+            </select></label>}
+            {taskKind !== "custom" && taskKind !== "legacy" && <p className="form-wide">
+              {baselines.data?.find(t => t.id === taskKind)?.task}<br />
+              <small>固定 commit：{baselines.data?.find(t => t.id === taskKind)?.spec.commit || "正在加载任务集"}</small>
+            </p>}
+            {taskKind === "custom" && <>
+              <label>公开 GitHub URL 或 registered:仓库编号<input value={source} onChange={e => setSource(e.target.value)} placeholder="https://github.com/owner/repo" /></label>
+              <label>完整 commit（40 位）<input value={commit} onChange={e => setCommit(e.target.value)} /></label>
+              <label>仓库子目录（可留空）<input value={subdir} onChange={e => setSubdir(e.target.value)} /></label>
+              <label>允许修改的文件（逗号分隔）<input value={paths} onChange={e => setPaths(e.target.value)} placeholder="src/calc.py,src/order.py" /></label>
+              <label className="form-wide">问题说明<textarea rows={3} value={taskText} onChange={e => setTaskText(e.target.value)} /></label>
+              <label className="form-wide">开发测试命令<input value={testCommand} onChange={e => setTestCommand(e.target.value)} /></label>
+              <label className="form-wide">独立验收测试（Python unittest，单独保存，不提供给模型）<textarea rows={7} value={verification} onChange={e => setVerification(e.target.value)} /></label>
+            </>}
+          </div>
           <p className="scope-note">
-            首版使用固定示例仓库。演示采用预设动作验证运行链路；真实模型自行定位与修改，结果分别记录。
+            支持小型 UTF-8 Python 仓库，沙箱断网且仅含标准库。预设演示仅验证链路；三个自建基线任务不代表 SWE-bench 成绩。
           </p>
           {(error || runs.error || detail.error) && (
             <div role="alert" className="error">
@@ -325,6 +373,12 @@ function Workspace() {
                           {event.data.reason ? (
                             <p>{String(event.data.reason)}</p>
                           ) : null}
+                          {event.type === "CONTEXT_COMPACTED" && <p>
+                            本次请求历史由 {String(event.data.before_characters)} 字符缩减到 {String(event.data.after_characters)} 字符；完整轨迹仍保留。
+                          </p>}
+                          {event.type === "REPOSITORY_READY" && <p>
+                            固定版本：{String(event.data.commit)}
+                          </p>}
                           {event.type === "SUCCEEDED" && (
                             <p>候选源码已在干净环境中通过独立测试。</p>
                           )}
@@ -361,9 +415,14 @@ function Workspace() {
                       <dd>干净副本 + 固定测试</dd>
                       <dt>模型调用</dt>
                       <dd>{run.result?.model_calls ?? "完成后汇总"}</dd>
+                      <dt>任务</dt><dd>{run.task}</dd>
+                      {run.spec && <><dt>仓库版本</dt><dd>{run.spec.source}<br />{run.spec.commit}</dd>
+                        <dt>上下文策略</dt><dd>{run.contextMode === "compact" ? "历史压缩" : "完整历史"}</dd>
+                        <dt>修改文件</dt><dd>{run.result?.changed_files?.join(", ") || "等待候选"}</dd>
+                        <dt>输入 / 输出 token</dt><dd>{run.result?.usage ? `${run.result.usage.input_tokens} / ${run.result.usage.output_tokens}` : "完成后汇总"}</dd></>}
                     </dl>
                     <div className="fact-note">
-                      当前版本提供执行与验收基线。上下文压缩、记忆、权限审批及
+                      当前版本提供仓库执行与验收。记忆、权限审批及
                       SWE-bench 接入按最终方案继续推进。
                     </div>
                   </aside>
@@ -425,8 +484,7 @@ function Workspace() {
                     独立验收
                   </h3>
                   <p>
-                    仅将候选 pricing.py
-                    放入新环境，使用固定的开发与边界测试验证。
+                    {run.spec ? "在相同镜像的独立容器中验证原始版本失败，再验证重新应用多文件补丁后的版本通过。" : "仅将候选 pricing.py 放入新环境，使用固定测试验证。"}
                   </p>
                   {run.result?.verification ? (
                     <>
