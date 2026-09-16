@@ -83,6 +83,20 @@ uv run python scripts/evaluate_baselines.py --recover-report runtime/validation/
 
 运行工件保存源码快照、patch、测试摘要、源码／测试／补丁哈希、Git commit、容器 image ID、模型参数和完整轨迹。摘要在页面显示；完整报告位于本地 `runtime/validation/` 与 `runtime/artifacts/`，不提交。复现验收需保留这些工件和对应镜像；模型输出本身不保证逐次相同。
 
+## M1 Checkpoint
+
+Worker 在任务开始、工具结果完整返回和执行结束的安全边界保存 checkpoint：工作区文本文件（含新增和删除）、当前与完整会话、压缩记录、模型／工具调用计数、已用时间和已知费用。记录绑定任务、执行代次、原始源码摘要、沙箱镜像 ID 和 Agent／模型配置摘要，写入后经 Worker 认证、租约和连续序号检查登记到控制端。页面显示保存事件，`GET /runs/<run-id>/checkpoints` 返回登记记录。
+
+```bash
+# 将最新已登记 checkpoint 还原到一次性新沙箱，核对内容后销毁，不调用模型
+docker compose exec -T worker python -m repopilot.checkpoint <run-id> --generation 1
+# 也可用 --checkpoint-id <id> 校验指定历史快照
+```
+
+运行工件位于 `runtime/artifacts/<run-id>/checkpoints/g<generation>/`。Python 的 `TracedAgent.restore_checkpoint(reference)` 可在同一有效执行代次、相同配置和镜像的新沙箱中，从最新安全边界继续；需先用该 checkpoint 的 files 初始化沙箱，再以原始 run/source 调用 `enable_checkpoints`。它保留已消耗预算，不重复已完成工具动作。恢复等待时间不计入已消耗执行时间；费用价格未知时仍不能据此宣称有真实美元预算控制。
+
+终态或过期快照、校验失败、配置／代次不匹配、有后台进程的工作区，以及模型／工具调用结果未确认的状态均不允许作为续跑点。checkpoint 仅覆盖上述文本工作区，不保存进程、环境变量或 `/tmp`。CLI 只校验还原；失联任务自动重新排队、跨代次恢复与审批恢复属于 M3，目前没有业务恢复按钮。恢复功能通过确定性故障测试验证，不代表真实模型效果评测。
+
 ## 上下文对照与边界
 
 `full` 保留完整会话历史。`compact` 在历史超过 3,500 字符且有足够旧消息时，用不超过约 1,200 字符的历史摘录替换较早消息，保留系统规则、原始任务及最近四条消息。完整原始轨迹独立保存，token 汇总使用完整记录，页面显示压缩事件。
@@ -93,7 +107,7 @@ uv run python scripts/evaluate_baselines.py --recover-report runtime/validation/
 
 成功与失败运行均汇总轨迹中的用量，包括格式错误回复。`usage_status` 区分完整、部分与不可用；部分记录只是已知 token 的小计，不代表整次运行消耗。基线报告同时列出完整覆盖的运行数。格式重试提示包含正确的命令块示例，连续三次格式错误仍会停止。
 
-当前只面向单用户本机运行。用户登录、权限审批、项目记忆、独立 Reviewer、执行恢复、S3 工件存储、OTel 和正式 SWE-bench 尚未完成；Qdrant/Redis 仅有扩展启动配置。任务失联标记中断，不自动恢复；API 的 broker 重连与孤儿沙箱清理仍待完善。固定测试验收不保证任意对抗代码无法干扰测试进程。
+当前只面向单用户本机运行。用户登录、权限审批、项目记忆、独立 Reviewer、失联后自动恢复、S3 工件存储、OTel 和正式 SWE-bench 尚未完成；Qdrant/Redis 仅有扩展启动配置。任务失联标记中断，不自动恢复；API 的 broker 重连与孤儿沙箱清理仍待完善。固定测试验收不保证任意对抗代码无法干扰测试进程。SWE-bench 环境预检和后续效果评测按用户要求推迟至整个项目完成后。
 
 ## 停止
 

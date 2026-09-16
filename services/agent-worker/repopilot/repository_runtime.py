@@ -61,8 +61,23 @@ sys.exit(0 if result.wasSuccessful() and result.testsRun and not result.skipped 
 """
 
 
-def read_tree(sandbox):
-    result = sandbox.container.exec_run(["timeout", "10", "python", "-I", "-c", READ_TREE])
+def read_tree(sandbox, quiescent=False):
+    guard = """
+import os
+ancestors = {1}
+pid = os.getpid()
+while pid > 1 and pid not in ancestors:
+    ancestors.add(pid)
+    with open('/proc/%d/stat' % pid) as f: pid = int(f.read().rsplit(')', 1)[1].split()[1])
+for name in os.listdir('/proc'):
+    if name.isdigit() and int(name) not in ancestors:
+        try:
+            with open('/proc/%s/stat' % name) as f: state = f.read().rsplit(')', 1)[1].split()[0]
+        except FileNotFoundError:
+            continue
+        assert state == 'Z', 'Workspace has a live background process'
+""" if quiescent else ""
+    result = sandbox.container.exec_run(["timeout", "10", "python", "-I", "-c", guard + READ_TREE])
     if result.exit_code or len(result.output) > 12 * 1024 * 1024:
         raise ValueError("Candidate tree contains invalid files or exceeds limits")
     return validate_files(json.loads(result.output))
@@ -182,6 +197,7 @@ def execute_repository_run(run, emit, cancelled):
                             instance_template="Task: {{task}}",
                             step_limit=20, cost_limit=0, wall_time_limit_seconds=360,
                             output_path=folder / "trajectory.json")
+        agent.enable_checkpoints(run, files)
         outcome = agent.run(run["task"] + "\nDevelopment test command: " + spec.testCommand)
         if outcome.get("exit_status") != "Submitted":
             raise RuntimeError(f"Agent stopped: {outcome.get('exit_status')}")

@@ -63,6 +63,22 @@ with client.stream("GET", f"/runs/{owned}/stream", headers={"last-event-id": str
             assert int(line[4:]) > cursor
             break
 checks.append("sse_reconnect_resumes_after_cursor")
+checkpoint = {"id": uuid.uuid4().hex, "sha256": "a" * 64, "workspace_sha256": "b" * 64,
+              "generation": generation, "sequence": 1, "phase": "ready"}
+cp_body = {**body, "key": "checkpoint-1", "type": "CHECKPOINT_SAVED", "data": checkpoint}
+for invalid, expected in [({"generation": generation + 1}, 400), ({"id": "../bad"}, 400),
+                          ({"sequence": 2}, 409), ({"phase": "inflight"}, 400)]:
+    response = client.post(f"/internal/runs/{owned}/step",
+                           json={**cp_body, "data": {**checkpoint, **invalid}}, headers=headers)
+    assert response.status_code == expected, response.text
+checks.append("invalid_checkpoint_metadata_and_sequence_rejected")
+for _ in range(2):
+    client.post(f"/internal/runs/{owned}/step", json=cp_body, headers=headers).raise_for_status()
+assert client.post(f"/internal/runs/{owned}/step", json={**cp_body, "key": "repeated-sequence"},
+                   headers=headers).status_code == 409
+registered = client.get(f"/runs/{owned}/checkpoints").raise_for_status().json()
+assert len(registered) == 1 and registered[0]["data"] == checkpoint
+checks.append("checkpoint_registration_idempotent_and_monotonic")
 client.post(f"/runs/{owned}/cancel", json={}).raise_for_status()
 client.post(
     f"/internal/runs/{owned}/step",

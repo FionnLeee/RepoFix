@@ -9,7 +9,7 @@ from pathlib import Path
 
 import docker
 from minisweagent.agents.default import DefaultAgent
-from minisweagent.exceptions import Submitted
+from minisweagent.exceptions import FormatError, InterruptAgentFlow, Submitted
 from minisweagent.models.litellm_textbased_model import LitellmTextbasedModel
 from minisweagent.models.test_models import DeterministicModel, make_output
 
@@ -151,8 +151,86 @@ class TracedAgent(DefaultAgent):
         self.full_messages = []
         self.compactions = []
         self.context_mode = context_mode
+        self.checkpoints = None
+        self._checkpoint_safe = False
+        self._restored = False
         super().__init__(*args, **kwargs)
         self.emit, self.cancelled = emit, cancelled
+
+    def enable_checkpoints(self, run, source):
+        from repopilot.checkpoint import CheckpointStore
+        self.checkpoints = CheckpointStore.for_agent(self, run, source)
+
+    def restore_checkpoint(self, reference):
+        from repopilot.checkpoint import agent_signature
+        from repopilot.repository import digest
+        from repopilot.repository_runtime import read_tree
+
+        if not self.checkpoints:
+            raise ValueError("Checkpoint store is not configured")
+        checkpoint = self.checkpoints.load(reference, for_resume=True)
+        if (agent_signature(self) != checkpoint.binding["agent_signature"]
+                or self.env.container.image.id != checkpoint.binding["image_id"]
+                or digest(read_tree(self.env, quiescent=True)) != checkpoint.workspace_sha256):
+            raise ValueError("Restore needs the pinned image, configuration and a fresh restored workspace")
+        state = checkpoint.state
+        self.messages, self.full_messages = state.messages, state.full_messages
+        self.compactions, self.extra_template_vars = state.compactions, state.template_vars
+        self.n_calls, self.cost = state.model_calls, state.cost
+        self.n_consecutive_format_errors = state.consecutive_format_errors
+        self.env.index = state.tool_calls
+        self._start_time = time.time() - state.active_seconds
+        if isinstance(self.model, DeterministicModel):
+            if state.model_cursor is None:
+                raise ValueError("Deterministic model cursor is missing")
+            self.model.current_index = state.model_cursor
+        self.checkpoints.sequence, self.checkpoints.latest = checkpoint.sequence, reference
+        self._checkpoint_safe, self._restored = True, True
+
+    def run(self, task="", **kwargs):
+        if not self._restored:
+            return super().run(task, **kwargs)
+        if self.extra_template_vars != {"task": task, **kwargs}:
+            raise ValueError("Restored task parameters differ from checkpoint")
+        self._restored = False
+        # Same pinned upstream exception protocol, without its fresh-run history reset.
+        while True:
+            try:
+                self.step()
+                self.n_consecutive_format_errors = 0
+            except FormatError as error:
+                self.cost += error.messages[0].get("extra", {}).get("cost", 0.)
+                self.n_consecutive_format_errors += 1
+                self.add_messages(*error.messages)
+                if 0 < self.config.max_consecutive_format_errors <= self.n_consecutive_format_errors:
+                    self.add_messages({"role": "exit", "content": "RepeatedFormatError",
+                                       "extra": {"exit_status": "RepeatedFormatError", "submission": ""}})
+            except InterruptAgentFlow as error:
+                self.add_messages(*error.messages)
+            except Exception as error:
+                self.handle_uncaught_exception(error)
+                raise
+            finally:
+                self.save(self.config.output_path)
+            if self.messages[-1].get("role") == "exit":
+                return self.messages[-1].get("extra", {})
+
+    def save(self, path, *extra_dicts):
+        data = super().save(path, *extra_dicts)
+        if self.checkpoints and self._checkpoint_safe:
+            status = self.messages[-1].get("extra", {}).get("exit_status")
+            phase = "submitted" if status == "Submitted" else "stopped" if status else "ready"
+            self.checkpoints.save(self, phase)
+        return data
+
+    def execute_actions(self, message):
+        try:
+            result = super().execute_actions(message)
+        except Submitted:
+            self._checkpoint_safe = True
+            raise
+        self._checkpoint_safe = True
+        return result
 
     def add_messages(self, *messages):
         self.full_messages.extend(messages)
@@ -189,18 +267,28 @@ class TracedAgent(DefaultAgent):
         if self.cancelled.is_set():
             raise Cancelled("任务已取消")
         self.compact_context()
+        if self.checkpoints:
+            if self.checkpoints.latest is None:
+                self.checkpoints.save(self, "ready")
+            self.checkpoints.mark_inflight(self.n_calls + 1)
+        self._checkpoint_safe = False
         self.emit(
             "MODEL_CALL",
             {"call": self.n_calls + 1, "input_characters": sum(len(str(m.get("content", ""))) for m in self.messages)},
         )
-        return super().query()
+        try:
+            return super().query()
+        except InterruptAgentFlow:
+            # Format/limit errors have not executed a tool; the upstream loop records them before save().
+            self._checkpoint_safe = True
+            raise
 
 
 def execute_run(run: dict, emit, cancelled: threading.Event) -> dict:
     if run.get("spec"):
         from repopilot.repository_runtime import execute_repository_run
         return execute_repository_run(run, emit, cancelled)
-    folder = Path(os.getenv("ARTIFACT_ROOT", "/artifacts")) / run["id"]
+    folder = Path(os.getenv("ARTIFACT_ROOT", "runtime/artifacts")) / run["id"]
     folder.mkdir(parents=True, exist_ok=True)
     env = Sandbox(run["id"], emit, cancelled)
     try:
@@ -241,6 +329,7 @@ def execute_run(run: dict, emit, cancelled: threading.Event) -> dict:
             wall_time_limit_seconds=240,
             output_path=folder / "trajectory.json",
         )
+        agent.enable_checkpoints(run, {"pricing.py": SOURCE, "test_pricing.py": DEVELOPMENT_TESTS})
         outcome = agent.run(run["task"])
         if outcome.get("exit_status") != "Submitted":
             raise RuntimeError(f"Agent stopped: {outcome.get('exit_status')}")

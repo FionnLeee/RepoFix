@@ -65,6 +65,7 @@ const labels: Record<string, string> = {
   HEARTBEAT: "执行保持连接",
   REPOSITORY_READY: "仓库快照已固定",
   CONTEXT_COMPACTED: "已压缩历史上下文",
+  CHECKPOINT_SAVED: "已保存执行检查点",
 };
 async function api<T>(path: string, body?: unknown): Promise<T> {
   const res = await fetch(
@@ -379,6 +380,11 @@ function Workspace() {
                           </p>}
                           {event.type === "REPOSITORY_READY" && <p>
                             固定版本：{String(event.data.commit)}
+                          </p>}
+                          {event.type === "CHECKPOINT_SAVED" && <p>
+                            检查点 {String(event.data.sequence)} · 已保存 {String(event.data.file_count)} 个文件，
+                            完成 {String(event.data.model_calls)} 次模型调用。
+                            {event.data.phase === "ready" ? "工作区与执行进度已保存。" : "已记录本次执行结束时的状态。"}
                           </p>}
                           {event.type === "SUCCEEDED" && (
                             <p>候选源码已在干净环境中通过独立测试。</p>

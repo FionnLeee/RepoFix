@@ -56,3 +56,10 @@ print(
 assert result["status"] == "SUCCEEDED", result.get("result")
 assert result["result"]["verification"]["passed"] and result["result"]["patch"]
 assert sum(e["type"] == "RUNNING" for e in result["events"]) == 1
+checkpoints = httpx.get(f"{base}/runs/{run_id}/checkpoints", timeout=10).raise_for_status().json()
+assert len(checkpoints) >= 2
+assert [e["data"]["sequence"] for e in checkpoints] == list(range(1, len(checkpoints) + 1))
+assert checkpoints[0]["data"]["model_calls"] == 0
+assert checkpoints[-1]["data"]["phase"] == "submitted"
+assert all(e["data"]["generation"] == result["generation"] for e in checkpoints)
+print(json.dumps({"checkpoint_count": len(checkpoints), "latest_checkpoint": checkpoints[-1]["data"]["id"]}))

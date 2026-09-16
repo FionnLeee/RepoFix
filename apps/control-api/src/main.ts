@@ -276,6 +276,12 @@ class Api {
     if (!run) throw new NotFoundException();
     return run;
   }
+  @Get("runs/:id/checkpoints") async checkpoints(@Param("id") id: string) {
+    if (!(await this.db.run.findUnique({ where: { id } }))) throw new NotFoundException();
+    return this.db.event.findMany({
+      where: { runId: id, type: "CHECKPOINT_SAVED" }, orderBy: { id: "asc" },
+    });
+  }
   @Post("runs/:id/cancel") async cancel(@Param("id") id: string) {
     return this.db.$transaction(async (tx) => {
       await tx.$queryRaw`SELECT id FROM "Run" WHERE id = ${id} FOR UPDATE`;
@@ -405,6 +411,22 @@ class Api {
         return { cancelRequested: run.cancelRequested, status: run.status };
       if (terminal.includes(run.status))
         throw new ConflictException("任务已经结束");
+      if (body.type === "CHECKPOINT_SAVED") {
+        const cp = body.data;
+        if (body.status || run.status !== "RUNNING" || cp.generation !== run.generation ||
+            typeof cp.id !== "string" || !/^[0-9a-f]{32}$/.test(cp.id) ||
+            typeof cp.sha256 !== "string" || !/^[0-9a-f]{64}$/.test(cp.sha256) ||
+            typeof cp.workspace_sha256 !== "string" || !/^[0-9a-f]{64}$/.test(cp.workspace_sha256) ||
+            !Number.isInteger(cp.sequence) || Number(cp.sequence) < 1 ||
+            !["ready", "submitted", "stopped"].includes(String(cp.phase)))
+          throw new BadRequestException("Checkpoint 元数据或执行边界无效");
+        const previous = await tx.event.findFirst({
+          where: { runId: id, type: "CHECKPOINT_SAVED" }, orderBy: { id: "desc" },
+        });
+        const previousData = previous?.data as Record<string, unknown> | undefined;
+        const sequence = previousData?.generation === run.generation ? Number(previousData.sequence) : 0;
+        if (cp.sequence !== sequence + 1) throw new ConflictException("Checkpoint 序号已过期");
+      }
       const status =
         run.cancelRequested && body.status ? "CANCELLED" : body.status;
       await tx.event.create({
