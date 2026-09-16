@@ -4,6 +4,14 @@
 
 最终方案见 [docs/DESIGN.md](docs/DESIGN.md)，实际进度与边界见 [docs/STATUS.md](docs/STATUS.md)，复用范围见 [docs/UPSTREAM.md](docs/UPSTREAM.md)。
 
+## 代码归档与回档
+
+私有仓库：[FionnLeee/RepoPilot](https://github.com/FionnLeee/RepoPilot)，默认分支 `main`。克隆时使用 `git clone --recurse-submodules https://github.com/FionnLeee/RepoPilot.git` 获取固定版本的上游依赖。
+
+每轮改进通过适用验证后，提交相关文件并执行 `git push origin main`。通过 `git log --oneline` 查找历史版本；需要撤销某次修改时，执行 `git revert <commit>`，验证后推送，保留完整历史。
+
+Git 归档包含源码、设计和脱敏验证证据；本机 `.env`、数据库数据及 `runtime/` 工件不在其中，恢复部署时需另行配置。
+
 ## 本地启动
 
 需要 Git、Docker Desktop/Linux Docker、Node.js 22 与 uv。
