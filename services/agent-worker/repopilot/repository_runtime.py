@@ -9,6 +9,7 @@ from pathlib import Path
 
 from minisweagent.models.test_models import DeterministicModel, make_output
 
+from repopilot import recovery
 from repopilot.reporting import usage_summary
 from repopilot.repository import RepositoryTask, digest, load_snapshot, validate_files
 from repopilot.runtime import SYSTEM, SafeModel, Sandbox, TracedAgent
@@ -159,32 +160,58 @@ def replay_patch(original, patch, folder):
         return validate_files(files)
 
 
-def execute_repository_run(run, emit, cancelled):
+def execute_repository_run(run, emit, cancelled, control=None, quota=None):
     started = time.monotonic()
     spec = RepositoryTask.model_validate(run["spec"])
-    files = load_snapshot(spec)
+    source = load_snapshot(spec)
     folder = Path(os.getenv("ARTIFACT_ROOT", "runtime/artifacts")) / run["id"]
     folder.mkdir(parents=True, exist_ok=True)
-    (folder / "source.json").write_text(json.dumps(files), encoding="utf-8")
+    (folder / "source.json").write_text(json.dumps(source), encoding="utf-8")
+    plan = control("resume-plan", {"generation": run["generation"]}) if control else {"mode": "fresh"}
+    if plan["mode"] == "wait":
+        checkpoint = recovery.load_resume(run, plan["checkpoint"], source)
+        approval = plan.get("approval") or control("approvals", recovery.approval_request(run, checkpoint))
+        emit("APPROVAL_WAIT", {"approval_id": approval["id"], "checkpoint": plan["checkpoint"]["id"],
+                               "reason": "审批尚未决定；本次执行停在检查点，等待用户决定后由新执行代次继续。"},
+             "WAITING_APPROVAL")
+        return {"paused": {"kind": "approval", "approval_id": approval["id"]}, "verification": {"passed": False}}
+    restored = recovery.load_resume(run, plan["checkpoint"], source) if plan["mode"] == "restore" else None
+    files = restored.files if restored else source
+    decision = recovery.resume_action(plan, restored) if restored else None
+    if restored:
+        # The interrupted attempt's own trajectory stays as evidence next to the resumed one.
+        recovery.preserve_trajectory(folder, restored.binding["generation"])
     sandbox = Sandbox(run["id"], emit, cancelled, files=files)
     image_id = sandbox.container.image.id
     provenance = {
         "source": spec.source, "commit": spec.commit, "subdir": spec.subdir,
-        "source_sha256": digest(files), "verification_sha256": digest(spec.verificationFiles),
+        "source_sha256": digest(source), "verification_sha256": digest(spec.verificationFiles),
         "image_id": image_id, "allowed_paths": spec.allowedPaths,
         "task_sha256": hashlib.sha256(run["task"].encode()).hexdigest(),
         "context_mode": run.get("contextMode", "full"), "runner_version": "repository-v1",
+        "approval_policy": run.get("approvalPolicy", "auto"),
+        "recovered_from": {"generation": restored.binding["generation"], "checkpoint_id": restored.id,
+                           "sequence": restored.sequence, "phase": restored.phase,
+                           "approval_id": decision["approval_id"] if decision else None} if restored else None,
     }
     context_manager = None
     try:
-        emit("REPOSITORY_READY", provenance)
+        if restored:
+            emit("RECOVERED", {"generation": run["generation"], "from_generation": restored.binding["generation"],
+                               "checkpoint_id": restored.id, "sequence": restored.sequence, "phase": restored.phase,
+                               "model_calls": restored.state.model_calls, "tool_calls": restored.state.tool_calls,
+                               "workspace_sha256": restored.workspace_sha256,
+                               "approval_id": decision["approval_id"] if decision else None,
+                               "decision": decision["kind"] if decision else "continue"})
+        else:
+            emit("REPOSITORY_READY", provenance)
         system = SYSTEM.replace("Only pricing.py is accepted as the final source patch. Tests are independently verified.",
                                 "Only these paths may change: " + ", ".join(spec.allowedPaths)
                                 + ". Other files must remain unchanged. Independent tests run after submission.")
         if run["mode"] == "demo":
             # A demo reference is only loaded from the trusted baseline catalog, never from an API request.
             from repopilot.baseline import reference_commands
-            commands = reference_commands(run.get("baselineId"), spec, files)
+            commands = reference_commands(run.get("baselineId"), spec, source)
             model = DeterministicModel(outputs=[make_output("预设基线动作", [{"command": cmd}], cost=0)
                                                 for cmd in commands], cost_per_call=0)
         else:
@@ -200,20 +227,25 @@ def execute_repository_run(run, emit, cancelled):
                             output_path=folder / "trajectory.json")
         if run.get("contextMode") == "managed":
             from repopilot.context import ContextManager
-            context_manager = ContextManager(run, files, emit, folder)
+            context_manager = ContextManager(run, source, emit, folder)
             if run["mode"] == "live":
                 model.config.model_kwargs["max_tokens"] = context_manager.config.output
             agent.context_manager = context_manager
             sandbox.archive_logs = True
-        agent.enable_checkpoints(run, files)
+        agent.enable_checkpoints(run, source)
+        agent.enable_approvals(run.get("approvalPolicy", "auto"), spec.allowedPaths,
+                               (lambda payload: control("approvals", payload)) if control else None)
+        agent.enable_quota(quota)
+        if restored:
+            agent.restore_checkpoint(plan["checkpoint"], allow_previous_generation=True, resume_action=decision)
         outcome = agent.run(run["task"] + "\nDevelopment test command: " + spec.testCommand)
         if outcome.get("exit_status") != "Submitted":
             raise RuntimeError(f"Agent stopped: {outcome.get('exit_status')}")
         candidate = read_tree(sandbox)
-        changed = sorted(name for name in files.keys() | candidate.keys() if files.get(name) != candidate.get(name))
+        changed = sorted(name for name in source.keys() | candidate.keys() if source.get(name) != candidate.get(name))
         if not set(changed).issubset(spec.allowedPaths):
             raise ValueError("Candidate changed paths outside allowedPaths")
-        patch, replayed = make_patch_and_reapply(files, candidate, folder)
+        patch, replayed = make_patch_and_reapply(source, candidate, folder)
         if len(patch.encode()) > 500000:
             raise ValueError("Patch exceeds event size limit")
         (folder / "candidate.patch").write_text(patch, encoding="utf-8")
@@ -222,7 +254,7 @@ def execute_repository_run(run, emit, cancelled):
         if context_manager:
             context_manager.close()
         sandbox.close()
-    baseline = verify(files, spec, run["id"], cancelled, image_id)
+    baseline = verify(source, spec, run["id"], cancelled, image_id)
     verified = verify(replayed, spec, run["id"], cancelled, image_id)
     before, after = baseline["report"], verified["report"]
     passed = bool(patch and before and after and before["tests"] > 0

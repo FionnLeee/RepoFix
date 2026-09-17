@@ -6,11 +6,14 @@ import threading
 import uuid
 
 import aio_pika
+import docker
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
+from repopilot.quota import ModelQuota
+from repopilot.reaper import reap
 from repopilot.reporting import failure_result
-from repopilot.runtime import Cancelled, execute_run
+from repopilot.runtime import ApprovalPaused, Cancelled, OwnershipLost, execute_run
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
@@ -22,7 +25,16 @@ class Message(BaseModel):
     run_id: uuid.UUID
 
 
-async def handle(message: aio_pika.IncomingMessage):
+def control_request(client: httpx.Client, run_id: str, kind: str, payload: dict) -> dict:
+    """Authenticated internal call; a lost attempt stops instead of overwriting newer state."""
+    response = client.post(f"/internal/runs/{run_id}/{kind}", json=payload)
+    if response.status_code == 409:
+        raise OwnershipLost(f"{kind} rejected: {response.text[:200]}")
+    response.raise_for_status()
+    return response.json()
+
+
+async def handle(message: aio_pika.IncomingMessage, quota: ModelQuota | None):
     try:
         payload = Message.model_validate_json(message.body)
     except ValidationError:
@@ -59,6 +71,8 @@ async def handle(message: aio_pika.IncomingMessage):
                 for attempt in range(2):
                     try:
                         response = sync.post(f"/internal/runs/{run['id']}/step", json=body)
+                        if response.status_code == 409:
+                            raise OwnershipLost(response.text[:200])
                         response.raise_for_status()
                         if response.json().get("cancelRequested"):
                             cancelled.set()
@@ -66,6 +80,10 @@ async def handle(message: aio_pika.IncomingMessage):
                     except (httpx.TimeoutException, httpx.NetworkError):
                         if attempt:
                             raise
+
+            def control(kind: str, payload: dict) -> dict:
+                # Ownership of this attempt is stated once here instead of at every call site.
+                return control_request(sync, run["id"], kind, {**payload, "workerId": worker_id})
 
             async def heartbeat():
                 while not done.is_set():
@@ -83,6 +101,8 @@ async def handle(message: aio_pika.IncomingMessage):
                                     "data": {},
                                 },
                             )
+                            if response.status_code == 409:
+                                return  # another attempt owns this run now; nothing left to keep alive
                             response.raise_for_status()
                             if response.json().get("cancelRequested"):
                                 cancelled.set()
@@ -92,16 +112,29 @@ async def handle(message: aio_pika.IncomingMessage):
 
             pulse = asyncio.create_task(heartbeat())
             try:
-                result = await asyncio.to_thread(execute_run, run, emit, cancelled)
+                result = await asyncio.to_thread(execute_run, run, emit, cancelled, control, quota)
+                if result.get("paused"):
+                    # The pause is already persisted (checkpoint + approval request); keep the
+                    # control plane's WAITING_APPROVAL status instead of writing a terminal one.
+                    logging.info("Run %s paused for approval %s", run["id"], result["paused"].get("approval_id"))
+                    return
                 status = (
                     "CANCELLED" if cancelled.is_set() else "SUCCEEDED" if result["verification"]["passed"] else "FAILED"
                 )
                 await asyncio.to_thread(emit, status, result, status)
                 logging.info("Run %s completed: %s", run["id"], status)
+            except ApprovalPaused as error:
+                logging.info("Run %s paused for approval: %s", run["id"], error)
+            except OwnershipLost as error:
+                logging.warning("Run %s attempt abandoned without writing state: %s", run["id"], error)
             except Exception as error:
                 status = "CANCELLED" if isinstance(error, Cancelled) or cancelled.is_set() else "FAILED"
                 result = await asyncio.to_thread(failure_result, run, error)
-                await asyncio.to_thread(emit, status, result, status)
+                try:
+                    await asyncio.to_thread(emit, status, result, status)
+                except OwnershipLost as lost:
+                    logging.warning("Run %s result rejected by a newer attempt: %s", run["id"], lost)
+                    return
                 logging.warning("Run %s stopped: %s", run["id"], type(error).__name__)
             finally:
                 done.set()
@@ -109,15 +142,39 @@ async def handle(message: aio_pika.IncomingMessage):
                 sync.close()
 
 
+async def reap_loop(client: httpx.AsyncClient):
+    """Sweep sandbox containers whose run is no longer active; never reuse them silently."""
+    docker_client = docker.from_env(timeout=45)
+    while True:
+        try:
+            active = (await client.get("/internal/runs/active")).raise_for_status().json()
+            result = await asyncio.to_thread(reap, docker_client, set(active["runs"]))
+            if result["removed"] or result["failed"]:
+                logging.info("Reaper removed %d container(s), %d failure(s)",
+                             len(result["removed"]), len(result["failed"]))
+        except Exception as error:
+            # A control plane that cannot be reached must not lead to blind removals.
+            logging.warning("Reaper sweep skipped: %s", type(error).__name__)
+        await asyncio.sleep(30)
+
+
 async def main():
+    quota = ModelQuota.from_env()
     connection = await aio_pika.connect_robust(os.environ["AMQP_URL"])
     async with connection:
         channel = await connection.channel()
         await channel.set_qos(prefetch_count=1)
         queue = await channel.declare_queue("repopilot.runs.v1", durable=True)
-        await queue.consume(handle)
-        logging.info("Worker %s waiting for tasks", socket.gethostname())
-        await asyncio.Future()
+        await queue.consume(lambda message: handle(message, quota))
+        reaper_headers = {"authorization": f"Bearer {os.environ['WORKER_TOKEN']}"}
+        async with httpx.AsyncClient(base_url=os.environ.get("CONTROL_API_URL", "http://api:3101"),
+                                     headers=reaper_headers, timeout=15) as client:
+            sweeper = asyncio.create_task(reap_loop(client))
+            logging.info("Worker %s waiting for tasks", socket.gethostname())
+            try:
+                await asyncio.Future()
+            finally:
+                sweeper.cancel()
 
 
 if __name__ == "__main__":

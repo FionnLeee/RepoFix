@@ -103,10 +103,117 @@ while time.monotonic() < deadline:
         break
     time.sleep(2)
 assert detail["status"] == "INTERRUPTED"
-checks.append("expired_lease_marked_interrupted")
+assert any(e["type"] == "INTERRUPTED" and "没有已登记的可恢复检查点" in e["data"]["reason"]
+           for e in detail["events"])
+checks.append("expired_lease_without_checkpoint_marked_interrupted")
+
+# M3: version-bound approvals, their decision, and the resume plan a new generation receives.
+paused_run = create()
+claim = client.post(f"/internal/runs/{paused_run}/claim", json={"workerId": "protocol-test"},
+                    headers=headers).raise_for_status().json()
+generation = claim["generation"]
+plan = client.post(f"/internal/runs/{paused_run}/resume-plan",
+                   json={"workerId": "protocol-test", "generation": generation},
+                   headers=headers).raise_for_status().json()
+assert plan == {"mode": "fresh"}
+assert client.post(f"/internal/runs/{paused_run}/resume-plan",
+                   json={"workerId": "someone-else", "generation": generation}, headers=headers).status_code == 409
+checks.append("resume_plan_is_fresh_without_a_checkpoint_and_checks_ownership")
+
+checkpoint = {"id": uuid.uuid4().hex, "sha256": "a" * 64, "workspace_sha256": "b" * 64,
+              "generation": generation, "sequence": 1, "phase": "awaiting_approval", "action_sha256": "c" * 64}
+client.post(f"/internal/runs/{paused_run}/step",
+            json={"workerId": "protocol-test", "generation": generation, "key": "paused-checkpoint",
+                  "type": "CHECKPOINT_SAVED", "data": checkpoint}, headers=headers).raise_for_status()
+
+# The worker that owned this attempt is gone; the lease expires and the coordinator requeues it.
+deadline = time.monotonic() + 90
+while True:
+    detail = client.get(f"/runs/{paused_run}").json()
+    requeued = next((e for e in detail["events"] if e["type"] == "REQUEUED"), None)
+    if requeued or time.monotonic() > deadline:
+        break
+    time.sleep(2)
+assert requeued, "a paused checkpoint must be recoverable"
+assert requeued["data"]["checkpoint_id"] == checkpoint["id"]
+assert detail["status"] == "QUEUED" and detail["recoveryAttempts"] == 1
+checks.append("expired_lease_requeued_from_a_registered_checkpoint")
+
+attempt = client.post(f"/internal/runs/{paused_run}/claim", json={"workerId": "protocol-test"},
+                      headers=headers).raise_for_status().json()
+assert attempt["generation"] == generation + 1
+plan = client.post(f"/internal/runs/{paused_run}/resume-plan",
+                   json={"workerId": "protocol-test", "generation": attempt["generation"]},
+                   headers=headers).raise_for_status().json()
+assert plan["mode"] == "wait" and plan["approval"] is None and plan["checkpoint"]["id"] == checkpoint["id"]
+checks.append("resume_plan_waits_for_a_decision_that_was_never_recorded")
+
+request = {"workerId": "protocol-test", "generation": attempt["generation"],
+           "checkpoint": {"id": checkpoint["id"], "sequence": 1}, "workspaceSha256": "b" * 64,
+           "action": {"command": "echo changed > conftest.py"}, "actionSha256": "c" * 64,
+           "reason": "该动作写入允许范围之外的位置（/conftest.py）。",
+           "targets": [{"path": "/conftest.py", "allowed": False}], "policy": "auto"}
+assert client.post(f"/internal/runs/{paused_run}/approvals",
+                   json={**request, "workspaceSha256": "d" * 64}, headers=headers).status_code == 400
+assert client.post(f"/internal/runs/{paused_run}/approvals",
+                   json={**request, "actionSha256": "e" * 64}, headers=headers).status_code == 400
+checks.append("approval_must_match_the_registered_checkpoint")
+
+approval_id = client.post(f"/internal/runs/{paused_run}/approvals",
+                          json=request, headers=headers).raise_for_status().json()["id"]
+detail = client.get(f"/runs/{paused_run}").json()
+assert detail["status"] == "WAITING_APPROVAL" and len(detail["approvals"]) == 1
+assert detail["approvals"][0]["workspaceSha256"] == "b" * 64
+assert detail["approvals"][0]["checkpointSequence"] == 1
+assert client.post(f"/internal/runs/{paused_run}/approvals", json=request, headers=headers).json()["id"] == approval_id
+checks.append("approval_request_pauses_the_run_and_is_idempotent")
+
+assert client.post(f"/internal/runs/{paused_run}/resume-plan",
+                   json={"workerId": "protocol-test", "generation": attempt["generation"]},
+                   headers=headers).status_code == 409
+client.post(f"/runs/{paused_run}/approvals/{approval_id}/decide",
+            json={"decision": "approve", "note": "协议检查"}).raise_for_status()
+assert client.post(f"/runs/{paused_run}/approvals/{approval_id}/decide",
+                   json={"decision": "reject"}).status_code == 409
+detail = client.get(f"/runs/{paused_run}").json()
+assert detail["status"] == "QUEUED" and detail["approvals"][0]["status"] == "APPROVED"
+assert detail["approvals"][0]["note"] == "协议检查"
+checks.append("approval_decision_is_final_and_requeues_the_run")
+
+resumed = client.post(f"/internal/runs/{paused_run}/claim", json={"workerId": "protocol-test"},
+                      headers=headers).raise_for_status().json()
+assert resumed["generation"] == generation + 2
+plan = client.post(f"/internal/runs/{paused_run}/resume-plan",
+                   json={"workerId": "protocol-test", "generation": resumed["generation"]},
+                   headers=headers).raise_for_status().json()
+assert plan["mode"] == "restore" and plan["checkpoint"]["id"] == checkpoint["id"]
+assert plan["approval"]["status"] == "APPROVED" and plan["approval"]["actionSha256"] == "c" * 64
+checks.append("resume_plan_returns_the_decided_checkpoint_to_the_new_generation")
+
+detail = client.post(f"/runs/{paused_run}/cancel", json={}).raise_for_status().json()
+assert detail["cancelRequested"] is True
+
+invalidated = create()
+claim = client.post(f"/internal/runs/{invalidated}/claim", json={"workerId": "protocol-test"},
+                    headers=headers).raise_for_status().json()
+paused = {**checkpoint, "id": uuid.uuid4().hex, "generation": claim["generation"]}
+client.post(f"/internal/runs/{invalidated}/step",
+            json={"workerId": "protocol-test", "generation": claim["generation"], "key": "paused-checkpoint",
+                  "type": "CHECKPOINT_SAVED", "data": paused}, headers=headers).raise_for_status()
+pending = client.post(f"/internal/runs/{invalidated}/approvals",
+                      json={**request, "generation": claim["generation"],
+                            "checkpoint": {"id": paused["id"], "sequence": 1}},
+                      headers=headers).raise_for_status().json()
+client.post(f"/runs/{invalidated}/cancel", json={}).raise_for_status()
+detail = client.get(f"/runs/{invalidated}").json()
+assert detail["status"] == "CANCELLED" and detail["approvals"][0]["status"] == "INVALIDATED"
+assert client.post(f"/runs/{invalidated}/approvals/{pending['id']}/decide",
+                   json={"decision": "approve"}).status_code == 409
+checks.append("cancel_invalidates_a_pending_approval")
+
 report = {
     "checks": checks,
-    "run_ids": [cancelled, owned, expired],
+    "run_ids": [cancelled, owned, expired, paused_run, invalidated],
     "note": "Synthetic control-plane verification, no model calls.",
 }
 path = root / "runtime" / "validation" / "protocol.json"

@@ -16,6 +16,7 @@ import {
   GitBranch,
   LoaderCircle,
   Play,
+  ShieldAlert,
   Square,
   Terminal,
   Workflow,
@@ -28,6 +29,19 @@ type Event = {
   data: Record<string, unknown>;
   createdAt: string;
 };
+type Approval = {
+  id: string;
+  status: string;
+  generation: number;
+  action: { command?: string };
+  reason: string;
+  targets?: { path: string; allowed: boolean }[];
+  workspaceSha256: string;
+  checkpointSequence: number;
+  note?: string | null;
+  requestedAt: string;
+  decidedAt?: string | null;
+};
 type Run = {
   id: string;
   mode: string;
@@ -38,7 +52,10 @@ type Run = {
   contextMode?: string;
   projectId?: string;
   memoryEnabled?: boolean;
+  approvalPolicy?: string;
+  recoveryAttempts?: number;
   spec?: { source: string; commit: string; subdir: string };
+  approvals?: Approval[];
   createdAt: string;
   events: Event[];
   result?: {
@@ -57,6 +74,7 @@ const labels: Record<string, string> = {
   QUEUED: "等待执行",
   RUNNING: "执行中",
   VERIFYING: "独立验收",
+  WAITING_APPROVAL: "等待审批",
   SUCCEEDED: "已通过",
   FAILED: "未通过",
   CANCELLED: "已取消",
@@ -73,6 +91,14 @@ const labels: Record<string, string> = {
   INDEX_FALLBACK: "使用当前文件检索",
   CONTEXT_ASSEMBLED: "上下文已组装",
   CONTEXT_USAGE: "上下文用量核对",
+  APPROVAL_REQUESTED: "请求动作审批",
+  APPROVAL_DECIDED: "审批已决定",
+  APPROVAL_APPLIED: "已执行批准的动作",
+  APPROVAL_WAIT: "审批未决，停在检查点",
+  REQUEUED: "租约过期，重新排队",
+  RECOVERED: "从检查点恢复执行",
+  QUOTA_WAIT: "等待模型并发配额",
+  QUOTA_FALLBACK: "Redis 不可用，未共享配额",
 };
 async function api<T>(path: string, body?: unknown): Promise<T> {
   const res = await fetch(
@@ -107,6 +133,7 @@ function Workspace() {
     [subdir, setSubdir] = useState(""),
     [taskText, setTaskText] = useState(""),
     [paths, setPaths] = useState(""),
+    [approvalPolicy, setApprovalPolicy] = useState("auto"),
     [testCommand, setTestCommand] = useState("python -m unittest discover -v"),
     [verification, setVerification] = useState("import unittest\n\nclass Acceptance(unittest.TestCase):\n    def test_behavior(self):\n        # 替换为实际业务断言\n        self.fail('请填写独立验收测试')\n"),
     [busy, setBusy] = useState(false);
@@ -151,6 +178,7 @@ function Workspace() {
       const run = await api<Run>("/runs", {
         mode,
         requestKey: crypto.randomUUID(),
+        approvalPolicy,
         ...(taskKind === "legacy" ? {} : taskKind === "custom" ? {
           task: taskText, contextMode, memoryEnabled,
           spec: { source, commit, subdir, allowedPaths: paths.split(",").map(p => p.trim()).filter(Boolean),
@@ -174,9 +202,20 @@ function Workspace() {
       setError((e as Error).message);
     }
   }
+  async function decide(approvalId: string, decision: string) {
+    try {
+      await api(`/runs/${id}/approvals/${approvalId}/decide`, { decision });
+      setError("");
+      await qc.invalidateQueries({ queryKey: ["run", id] });
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  }
   const run = detail.data,
     events = run?.events?.filter((e) => e.type !== "HEARTBEAT") || [];
-  const active = run && ["QUEUED", "RUNNING", "VERIFYING"].includes(run.status);
+  const active =
+    run && ["QUEUED", "RUNNING", "VERIFYING", "WAITING_APPROVAL"].includes(run.status);
+  const pending = run?.approvals?.find((a) => a.status === "PENDING");
   return (
     <div className="shell">
       <aside className="rail">
@@ -288,6 +327,10 @@ function Workspace() {
               <option value="full">完整历史（基线）</option>
               <option value="compact">历史压缩（对照实验）</option>
             </select></label>}
+            <label>动作审批<select value={approvalPolicy} onChange={e => setApprovalPolicy(e.target.value)}>
+              <option value="auto">自动：越界写入需批准</option>
+              <option value="strict">严格：所有文件写入都需批准</option>
+            </select></label>
             {taskKind !== "custom" && taskKind !== "legacy" && <p className="form-wide">
               {baselines.data?.find(t => t.id === taskKind)?.task}<br />
               <small>固定 commit：{baselines.data?.find(t => t.id === taskKind)?.spec.commit || "正在加载任务集"}</small>
@@ -330,6 +373,41 @@ function Workspace() {
                   </Button>
                 )}
               </div>
+              {pending && (
+                <div className="approval">
+                  <div className="approval-head">
+                    <ShieldAlert size={16} />
+                    <strong>这个动作需要你批准</strong>
+                  </div>
+                  <code className="command">$ {pending.action?.command}</code>
+                  <p>{pending.reason}</p>
+                  {pending.targets?.length ? (
+                    <p>
+                      涉及路径：
+                      {pending.targets
+                        .map((t) => `${t.path}${t.allowed ? "" : "（越界）"}`)
+                        .join("、")}
+                    </p>
+                  ) : null}
+                  <p className="approval-binding">
+                    绑定工作区 {pending.workspaceSha256.slice(0, 12)}… · 检查点 #
+                    {pending.checkpointSequence} · 执行代次 {pending.generation}
+                  </p>
+                  <div className="task-actions">
+                    <Button onClick={() => decide(pending.id, "approve")}>
+                      <Check size={14} />
+                      批准并继续
+                    </Button>
+                    <Button variant="outline" onClick={() => decide(pending.id, "reject")}>
+                      <Square size={12} />
+                      拒绝
+                    </Button>
+                  </div>
+                  <p>
+                    批准只对这一个动作和该工作区版本有效；执行会在新的执行代次从检查点恢复。
+                  </p>
+                </div>
+              )}
               <div className="tabs" role="tablist">
                 {[
                   ["trace", "执行轨迹"],
@@ -401,8 +479,26 @@ function Workspace() {
                           {event.type === "CHECKPOINT_SAVED" && <p>
                             检查点 {String(event.data.sequence)} · 已保存 {String(event.data.file_count)} 个文件，
                             完成 {String(event.data.model_calls)} 次模型调用。
-                            {event.data.phase === "ready" ? "工作区与执行进度已保存。" : "已记录本次执行结束时的状态。"}
+                            {event.data.phase === "ready" ? "工作区与执行进度已保存。" : event.data.phase === "awaiting_approval" ? "已停在安全边界，等待动作审批。" : "已记录本次执行结束时的状态。"}
                           </p>}
+                          {event.type === "APPROVAL_REQUESTED" && <p>
+                            动作等待批准：{String((event.data.action as { command?: string } | undefined)?.command || "")}
+                          </p>}
+                          {event.type === "APPROVAL_DECIDED" && <p>
+                            {event.data.decision === "APPROVED" ? "已批准" : "已拒绝"}；审批绑定动作 {String(event.data.action_sha256 || "").slice(0, 12)}… 与工作区 {String(event.data.workspace_sha256 || "").slice(0, 12)}…。
+                          </p>}
+                          {event.type === "APPROVAL_WAIT" && <p>
+                            审批尚未决定，本次执行停在检查点，等待决定后由新的执行代次继续。
+                          </p>}
+                          {event.type === "REQUEUED" && <p>
+                            第 {String(event.data.attempt)} 次自动恢复：从执行代次 {String(event.data.from_generation)} 的检查点
+                            {" "}{String(event.data.checkpoint_id || "").slice(0, 8)}… 重新排队。
+                          </p>}
+                          {event.type === "RECOVERED" && <p>
+                            已在执行代次 {String(event.data.generation)} 从检查点 {String(event.data.checkpoint_id || "").slice(0, 8)}…
+                            （第 {String(event.data.sequence)} 个安全点）恢复，沿用已计入的 {String(event.data.model_calls)} 次模型调用。
+                          </p>}
+                          {event.type === "QUOTA_FALLBACK" && <p>{String(event.data.effect || "")}</p>}
                           {event.type === "SUCCEEDED" && (
                             <p>候选源码已在干净环境中通过独立测试。</p>
                           )}
@@ -440,6 +536,18 @@ function Workspace() {
                       <dt>模型调用</dt>
                       <dd>{run.result?.model_calls ?? "完成后汇总"}</dd>
                       <dt>任务</dt><dd>{run.task}</dd>
+                      <dt>动作审批</dt>
+                      <dd>
+                        {run.approvalPolicy === "strict"
+                          ? "严格：所有文件写入需批准"
+                          : "自动：越界写入需批准"}
+                      </dd>
+                      {run.recoveryAttempts ? (
+                        <>
+                          <dt>自动恢复</dt>
+                          <dd>已恢复 {run.recoveryAttempts} 次（上限 3 次）</dd>
+                        </>
+                      ) : null}
                       {run.spec && <><dt>仓库版本</dt><dd>{run.spec.source}<br />{run.spec.commit}</dd>
                         <dt>上下文策略</dt><dd>{run.contextMode === "managed" ? "预算、检索与结构化压缩" : run.contextMode === "compact" ? "历史压缩" : "完整历史"}</dd>
                         <dt>修改文件</dt><dd>{run.result?.changed_files?.join(", ") || "等待候选"}</dd>
@@ -448,8 +556,8 @@ function Workspace() {
                           : ["SUCCEEDED", "FAILED", "CANCELLED", "INTERRUPTED"].includes(run.status) ? "未获得用量记录" : "完成后汇总"}</dd></>}
                     </dl>
                     <div className="fact-note">
-                      当前版本提供仓库执行、上下文与显式记忆。权限审批及
-                      SWE-bench 接入按最终方案继续推进。
+                      当前版本提供可靠调度（失联自动重排队、跨代次检查点恢复、共享模型并发配额）、
+                      版本绑定审批与显式记忆。SWE-bench 接入与效果评测按最终方案继续推进。
                     </div>
                   </aside>
                 </div>

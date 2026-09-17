@@ -6,10 +6,18 @@ import uuid
 
 import pytest
 from minisweagent.models.test_models import DeterministicModel, make_output
-from repopilot.checkpoint import AgentState, Checkpoint, CheckpointStore, atomic_json, checksum
+from repopilot.checkpoint import (
+    AgentState,
+    Checkpoint,
+    CheckpointStore,
+    atomic_json,
+    binding_matches,
+    checksum,
+    load_registered,
+)
 from repopilot.repository import digest
 from repopilot.repository_runtime import read_tree
-from repopilot.runtime import Sandbox, TracedAgent
+from repopilot.runtime import ApprovalPaused, Sandbox, TracedAgent
 
 
 class BoundaryPause(BaseException):
@@ -92,7 +100,8 @@ def checkpoint_fixture(tmp_path):
     doc = Checkpoint(schema_version=1, id=uuid.uuid4().hex, binding=binding, phase="ready", sequence=3,
                      created_at=time.time(), files={"a.py": "x=1"}, workspace_sha256=digest({"a.py": "x=1"}),
                      state=state).model_dump(mode="json")
-    ref = {"id": doc["id"], "sha256": checksum(doc)}
+    ref = {"id": doc["id"], "sha256": checksum(doc), "generation": 1, "sequence": 3, "phase": "ready",
+           "workspace_sha256": doc["workspace_sha256"]}
     atomic_json(store.folder / f"{doc['id']}.json", doc)
     atomic_json(store.folder / "latest.json", ref)
     return store, doc, ref
@@ -252,3 +261,143 @@ def test_failed_registration_never_publishes_a_new_recovery_point(tmp_path, monk
             agent.checkpoints.load(reference, for_resume=True)
     finally:
         sandbox.close()
+
+
+def test_binding_matches_only_earlier_generations_when_recovering():
+    binding = {"run_id": "run", "generation": 2, "task_sha256": "task", "source_sha256": "source", "image_id": "image"}
+    earlier = {**binding, "generation": 1}
+    assert binding_matches(binding, earlier, allow_previous_generation=True) is True
+    assert binding_matches(binding, binding, allow_previous_generation=True) is False
+    assert binding_matches(binding, {**earlier, "generation": 3}, allow_previous_generation=True) is False
+    assert binding_matches(binding, {**earlier, "task_sha256": "other"}, allow_previous_generation=True) is False
+    assert binding_matches(binding, binding) is True
+    assert binding_matches(binding, earlier) is False
+
+
+def pending_action_fixture(tmp_path, action=None, generation=1):
+    action = action or {"command": "echo changed > other.py"}
+    binding = {"run_id": str(uuid.uuid4()), "generation": generation, "task_sha256": "task", "image_id": "image"}
+    store = CheckpointStore(tmp_path, binding, lambda *_: None)
+    state = AgentState(messages=[{"role": "user", "content": "task"},
+                                 {"role": "assistant", "content": "edit", "extra": {"actions": [action]}}],
+                       full_messages=[], compactions=[], template_vars={"task": "task"}, model_calls=1, tool_calls=1,
+                       cost=0., active_seconds=5., consecutive_format_errors=0)
+    doc = Checkpoint(schema_version=1, id=uuid.uuid4().hex, binding=binding, phase="awaiting_approval", sequence=2,
+                     created_at=time.time(), files={"a.py": "x"}, workspace_sha256=digest({"a.py": "x"}), state=state,
+                     pending_action={"action": action, "action_sha256": checksum(action), "reason": "outside",
+                                     "targets": [{"path": "/other.py", "allowed": False}], "policy": "auto"}
+                     ).model_dump(mode="json")
+    ref = {"id": doc["id"], "sha256": checksum(doc), "generation": generation, "sequence": 2,
+           "phase": "awaiting_approval", "workspace_sha256": doc["workspace_sha256"]}
+    atomic_json(store.folder / f"{doc['id']}.json", doc)
+    atomic_json(store.folder / "latest.json", ref)
+    return store, doc, ref
+
+
+def test_awaiting_approval_checkpoint_requires_a_verifiable_pending_action(tmp_path):
+    store, doc, ref = pending_action_fixture(tmp_path)
+    loaded = store.load(ref, for_resume=True)
+    assert loaded.pending_action["action_sha256"] == checksum({"command": "echo changed > other.py"})
+
+    tampered = copy.deepcopy(doc)
+    tampered["pending_action"]["action_sha256"] = "0" * 64
+    atomic_json(store.folder / f"{doc['id']}.json", tampered)
+    with pytest.raises(ValueError, match="verifiable pending action"):
+        store.load({**ref, "sha256": checksum(tampered)}, for_resume=True)
+
+    mismatched = copy.deepcopy(doc)
+    mismatched["state"]["messages"][-1]["extra"]["actions"] = [{"command": "echo other > other.py"}]
+    atomic_json(store.folder / f"{doc['id']}.json", mismatched)
+    with pytest.raises(ValueError, match="verifiable pending action"):
+        store.load({**ref, "sha256": checksum(mismatched)}, for_resume=True)
+
+
+def test_automatic_recovery_discards_an_in_flight_marker(tmp_path):
+    store, doc, ref = pending_action_fixture(tmp_path)
+    store.mark_inflight(2)
+    with pytest.raises(ValueError, match="in-flight"):
+        store.load(ref, for_resume=True)
+    later = CheckpointStore(tmp_path, {**store.binding, "generation": 2}, lambda *_: None)
+    # The workspace is rebuilt from the checkpoint, so an unfinished step cannot leak into it.
+    assert later.load(ref, for_resume=True, allow_previous_generation=True).id == doc["id"]
+    with pytest.raises(ValueError, match="mismatch"):
+        later.load(ref)
+
+
+def test_denied_approval_returns_the_decision_as_an_observation():
+    class StubEnv:
+        index = 0
+
+        def get_template_vars(self):
+            return {}
+
+        def serialize(self):
+            return {}
+
+    agent = TracedAgent(DeterministicModel(outputs=[]), StubEnv(), emit=lambda *_: None,
+                        cancelled=threading.Event(), system_template="repair", instance_template="{{task}}")
+    action = {"command": "echo changed > other.py"}
+    agent.pending_action = {"action": action, "action_sha256": checksum(action), "reason": "outside", "targets": []}
+    agent.messages = [{"role": "user", "content": "task"},
+                      {"role": "assistant", "content": "edit", "extra": {"actions": [action]}}]
+    agent.apply_resume({"kind": "denied", "approval_id": "a1", "note": "不要改这个文件", "workspace_sha256": "w"})
+    assert agent.pending_action is None
+    decision = agent.messages[-1]
+    assert decision["role"] == "user" and "rejected this action" in decision["content"]
+    assert "不要改这个文件" in decision["content"] and "other.py" in decision["content"]
+
+
+@pytest.mark.docker
+def test_approval_pause_holds_the_action_and_resumes_in_a_new_generation(tmp_path, monkeypatch):
+    monkeypatch.setenv("ARTIFACT_ROOT", str(tmp_path))
+    run = {"id": str(uuid.uuid4()), "generation": 1, "mode": "demo", "task": "edit the file"}
+    source = {"a.py": "old"}
+    requests = []
+
+    def request(payload):
+        requests.append(payload)
+        return {"id": f"approval-{len(requests)}"}
+
+    def build(sandbox, generation):
+        outputs = [make_output("edit", [{"command": "echo new > a.py"}], cost=0),
+                   make_output("done", [{"command": "echo COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT"}], cost=0)]
+        agent = TracedAgent(DeterministicModel(outputs=outputs), sandbox, emit=lambda *_: None,
+                            cancelled=threading.Event(), system_template="repair", instance_template="{{task}}",
+                            output_path=tmp_path / run["id"] / "trajectory.json")
+        agent.enable_checkpoints({**run, "generation": generation}, source)
+        agent.enable_approvals("strict", ["a.py"], request)
+        return agent
+
+    first = Sandbox(run["id"], lambda *_: None, threading.Event(), files=source)
+    try:
+        agent = build(first, 1)
+        with pytest.raises(ApprovalPaused):
+            agent.run(run["task"])
+        reference = agent.checkpoints.latest
+        assert reference["phase"] == "awaiting_approval"
+        assert reference["action_sha256"] == checksum({"command": "echo new > a.py"})
+        assert read_tree(first) == {"a.py": "old"}  # the action is held, not executed
+        assert requests[0]["action"] == {"command": "echo new > a.py"}
+        assert requests[0]["workspaceSha256"] == reference["workspace_sha256"]
+        assert requests[0]["checkpoint"] == {"id": reference["id"], "sequence": reference["sequence"]}
+        assert agent.messages[-1]["role"] == "assistant"
+    finally:
+        first.close()
+
+    checkpoint = load_registered(tmp_path, run["id"], reference)
+    second = Sandbox(run["id"], lambda *_: None, threading.Event(), files=checkpoint.files,
+                     image=checkpoint.binding["image_id"])
+    try:
+        resumed = build(second, 2)
+        resumed.restore_checkpoint(reference, allow_previous_generation=True,
+                                   resume_action={"kind": "execute", "approval_id": "approval-1", "note": None,
+                                                  "workspace_sha256": checkpoint.workspace_sha256})
+        assert resumed.run(run["task"])["exit_status"] == "Submitted"
+        assert read_tree(second) == {"a.py": "new\n"}
+        assert resumed.pending_action is None
+        assert resumed.checkpoints.binding["generation"] == 2
+        assert resumed.checkpoints.latest["generation"] == 2  # new saves belong to the new attempt
+        with pytest.raises(ValueError, match="terminal"):
+            resumed.checkpoints.load(resumed.checkpoints.latest, for_resume=True)
+    finally:
+        second.close()

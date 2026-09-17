@@ -52,6 +52,8 @@ import { ContextService, ContextOwner, IndexBegin, IndexPublish, MemoryWrite, pr
 const TASK =
   "修复 pricing.py 中 discounted_total：百分比折扣应按百分比计算，结果保留两位小数，并拒绝小于 0 或大于 100 的折扣。运行开发测试后提交补丁。";
 const terminal = ["SUCCEEDED", "FAILED", "CANCELLED", "INTERRUPTED"];
+const MAX_RECOVERY_ATTEMPTS = 3;
+const resumablePhases = ["ready", "awaiting_approval"];
 const pathPattern = /^(?!\/)(?!.*(?:^|\/)\.\.(?:\/|$))(?!.*(?:^|\/)\.(?:\/|$))(?!.*(?:^|\/)\.git(?:\/|$))[a-zA-Z0-9_.-]+(?:\/[a-zA-Z0-9_.-]+)*$/;
 class RepositorySpec {
   @Matches(/^(registered:[a-zA-Z0-9_-]{1,60}|https:\/\/github\.com\/[a-zA-Z0-9_-]+\/[a-zA-Z0-9_.-]+)$/)
@@ -81,6 +83,7 @@ class CreateRun {
   @IsOptional() @IsString() @MaxLength(60) baselineId?: string;
   @IsOptional() @IsIn(["full", "compact", "managed"]) contextMode?: string;
   @IsOptional() @IsBoolean() memoryEnabled?: boolean;
+  @IsOptional() @IsIn(["auto", "strict"]) approvalPolicy?: string;
 }
 class Claim {
   @IsString() @MinLength(1) @MaxLength(100) workerId!: string;
@@ -92,8 +95,25 @@ class Step {
   @IsString() @MaxLength(50) type!: string;
   @IsObject() data!: Record<string, unknown>;
   @IsOptional()
-  @IsIn(["VERIFYING", "SUCCEEDED", "FAILED", "CANCELLED"])
+  @IsIn(["VERIFYING", "SUCCEEDED", "FAILED", "CANCELLED", "WAITING_APPROVAL"])
   status?: string;
+}
+class Ownership {
+  @IsString() @MaxLength(100) workerId!: string;
+  @IsInt() @Min(1) generation!: number;
+}
+class ApprovalRequest extends Ownership {
+  @IsObject() checkpoint!: { id: string; sequence: number };
+  @Matches(/^[0-9a-f]{64}$/) workspaceSha256!: string;
+  @IsObject() action!: Record<string, unknown>;
+  @Matches(/^[0-9a-f]{64}$/) actionSha256!: string;
+  @IsString() @MaxLength(2000) reason!: string;
+  @IsArray() @ArrayMaxSize(20) targets!: unknown[];
+  @IsIn(["auto", "strict"]) policy!: string;
+}
+class Decision {
+  @IsIn(["approve", "reject"]) decision!: string;
+  @IsOptional() @IsString() @MaxLength(1000) note?: string;
 }
 
 @Injectable()
@@ -104,52 +124,104 @@ class Store extends PrismaClient implements OnModuleInit, OnModuleDestroy {
   busy = false;
   async onModuleInit() {
     await this.$connect();
-    this.connection = await connect(process.env.AMQP_URL!);
-    this.channel = await this.connection.createConfirmChannel();
-    await this.channel.assertQueue("repopilot.runs.v1", { durable: true });
+    await this.ensureChannel();
     this.timer = setInterval(() => {
       void this.tick().catch((e) => console.error("coordinator:", e.message));
     }, 1000);
   }
   async onModuleDestroy() {
     clearInterval(this.timer);
-    await this.channel?.close();
-    await this.connection?.close();
+    try {
+      await this.channel?.close();
+      await this.connection?.close();
+    } catch {
+      // shutting down with an already broken broker connection is not an error state
+    }
     await this.$disconnect();
+  }
+  async ensureChannel(): Promise<ConfirmChannel> {
+    if (this.channel) return this.channel;
+    const connection = await connect(process.env.AMQP_URL!);
+    connection.on("error", (error) => console.error("broker:", error.message));
+    connection.on("close", () => {
+      if (this.connection === connection) {
+        this.channel = undefined;
+        this.connection = undefined;
+      }
+    });
+    const channel = await connection.createConfirmChannel();
+    await channel.assertQueue("repopilot.runs.v1", { durable: true });
+    this.connection = connection;
+    this.channel = channel;
+    return channel;
+  }
+  async resetChannel() {
+    const connection = this.connection;
+    this.channel = undefined;
+    this.connection = undefined;
+    try {
+      await connection?.close();
+    } catch {
+      // the connection is being discarded either way
+    }
+  }
+  /** Latest control-plane-registered checkpoint the next attempt (``nextGeneration``) may resume from. */
+  async resumable(runId: string, nextGeneration: number) {
+    const events = await this.event.findMany({
+      where: { runId, type: "CHECKPOINT_SAVED" },
+      orderBy: { id: "asc" },
+    });
+    const candidates = events
+      .map((event) => event.data as any)
+      .filter((data) => data && Number.isInteger(data.generation) && data.generation < nextGeneration
+        && resumablePhases.includes(data.phase));
+    return candidates.length ? candidates[candidates.length - 1] : null;
   }
   async tick() {
     if (this.busy) return;
     this.busy = true;
     try {
-      for (const item of await this.outbox.findMany({
-        where: { publishedAt: null },
-        orderBy: { id: "asc" },
-        take: 20,
-      })) {
-        this.channel!.sendToQueue(
-          "repopilot.runs.v1",
-          Buffer.from(
-            JSON.stringify({
-              schema_version: 1,
-              message_id: String(item.id),
-              run_id: item.runId,
-            }),
-          ),
-          { persistent: true },
-        );
-        await this.channel!.waitForConfirms();
-        await this.outbox.update({
-          where: { id: item.id },
-          data: { publishedAt: new Date() },
-        });
-      }
+      const channel = await this.ensureChannel().catch((error) => {
+        console.error("broker:", error.message);
+        return null;
+      });
+      if (channel)
+        for (const item of await this.outbox.findMany({ where: { publishedAt: null }, orderBy: { id: "asc" }, take: 20 })) {
+          try {
+            channel.sendToQueue(
+              "repopilot.runs.v1",
+              Buffer.from(
+                JSON.stringify({
+                  schema_version: 1,
+                  message_id: String(item.id),
+                  run_id: item.runId,
+                }),
+              ),
+              { persistent: true },
+            );
+            await channel.waitForConfirms();
+          } catch (error) {
+            // Keep the outbox row; a later tick republishes after reconnecting.
+            console.error("publish:", (error as Error).message);
+            await this.resetChannel();
+            break;
+          }
+          await this.outbox.update({
+            where: { id: item.id },
+            data: { publishedAt: new Date() },
+          });
+        }
       const expired = await this.run.findMany({
         where: {
           status: { in: ["RUNNING", "VERIFYING"] },
           leaseUntil: { lt: new Date() },
         },
       });
-      for (const run of expired)
+      for (const run of expired) {
+        // The next attempt will run as the following generation; its own checkpoints are the
+        // candidates it may resume from.
+        const resume = await this.resumable(run.id, run.generation + 1);
+        const recover = !!resume && !run.cancelRequested && run.recoveryAttempts < MAX_RECOVERY_ATTEMPTS;
         await this.$transaction(async (tx) => {
           const changed = await tx.run.updateMany({
             where: {
@@ -158,20 +230,44 @@ class Store extends PrismaClient implements OnModuleInit, OnModuleDestroy {
               status: { in: ["RUNNING", "VERIFYING"] },
               leaseUntil: { lt: new Date() },
             },
-            data: { status: "INTERRUPTED", workerId: null },
+            data: recover
+              ? { status: "QUEUED", workerId: null, leaseUntil: null, recoveryAttempts: { increment: 1 } }
+              : { status: "INTERRUPTED", workerId: null, leaseUntil: null },
           });
-          if (changed.count)
+          if (!changed.count) return;
+          if (recover) {
+            await tx.event.create({
+              data: {
+                runId: run.id,
+                key: `requeued-${run.generation}`,
+                type: "REQUEUED",
+                data: {
+                  reason: "Worker 租约过期；按已登记的最新检查点重新入队，由新的执行代次恢复。",
+                  attempt: run.recoveryAttempts + 1,
+                  checkpoint_id: resume!.id,
+                  from_generation: resume!.generation,
+                  sequence: resume!.sequence,
+                  phase: resume!.phase,
+                },
+              },
+            });
+            await tx.outbox.create({ data: { runId: run.id } });
+          } else {
             await tx.event.create({
               data: {
                 runId: run.id,
                 key: `lease-expired-${run.generation}`,
                 type: "INTERRUPTED",
                 data: {
-                  reason: "Worker 租约过期；首版明确中断，不自动重放执行。",
+                  reason: resume
+                    ? `Worker 租约过期；自动恢复已用满 ${run.recoveryAttempts} 次，停在中断状态。`
+                    : "Worker 租约过期；没有已登记的可恢复检查点，停在中断状态。",
                 },
               },
             });
+          }
         });
+      }
     } finally {
       this.busy = false;
     }
@@ -196,7 +292,7 @@ class Api {
     return {
       status: "ok",
       upstream: "mini-swe-agent 2.4.6",
-      milestone: "M2",
+      milestone: "M3",
       liveEnabled: process.env.LIVE_ENABLED === "true",
     };
   }
@@ -255,6 +351,7 @@ class Api {
     const task = baseline?.task || body.task || TASK;
     const contextMode = body.contextMode || (spec ? "managed" : "full");
     const memoryEnabled = !!spec && contextMode === "managed" && (body.memoryEnabled ?? !body.baselineId);
+    const approvalPolicy = body.approvalPolicy || "auto";
     const projectId = spec ? projectKey(spec.source, spec.subdir) : null;
     if (spec) {
       if (!baseline && !body.task) throw new BadRequestException("指定仓库需要任务说明");
@@ -269,7 +366,9 @@ class Api {
       throw new BadRequestException("任务说明与上下文模式需要指定仓库或基线任务");
     }
     const matches = (run: any) => run.mode === body.mode && run.task === task &&
-      canonical(run.spec) === canonical(spec) && run.baselineId === (body.baselineId || null) && run.contextMode === contextMode && run.memoryEnabled === memoryEnabled;
+      canonical(run.spec) === canonical(spec) && run.baselineId === (body.baselineId || null) &&
+      run.contextMode === contextMode && run.memoryEnabled === memoryEnabled &&
+      run.approvalPolicy === approvalPolicy;
     const existing = await this.db.run.findUnique({
       where: { requestKey: body.requestKey },
     });
@@ -285,7 +384,7 @@ class Api {
         const run = await tx.run.create({
           data: { requestKey: body.requestKey, mode: body.mode, task,
             ...(spec ? { spec: spec as Prisma.InputJsonValue } : {}), baselineId: body.baselineId,
-            contextMode, projectId, memoryEnabled },
+            contextMode, projectId, memoryEnabled, approvalPolicy },
         });
         await tx.event.create({
           data: {
@@ -316,7 +415,7 @@ class Api {
   @Get("runs/:id") async detail(@Param("id") id: string) {
     const run = await this.db.run.findUnique({
       where: { id },
-      include: { events: { orderBy: { id: "asc" } } },
+      include: { events: { orderBy: { id: "asc" } }, approvals: { orderBy: { requestedAt: "desc" } } },
     });
     if (!run) throw new NotFoundException();
     return run;
@@ -325,6 +424,153 @@ class Api {
     if (!(await this.db.run.findUnique({ where: { id } }))) throw new NotFoundException();
     return this.db.event.findMany({
       where: { runId: id, type: "CHECKPOINT_SAVED" }, orderBy: { id: "asc" },
+    });
+  }
+  @Get("runs/:id/approvals") async approvals(@Param("id") id: string) {
+    if (!(await this.db.run.findUnique({ where: { id } }))) throw new NotFoundException();
+    return this.db.approval.findMany({ where: { runId: id }, orderBy: { requestedAt: "desc" } });
+  }
+  @Post("runs/:id/approvals/:approvalId/decide") async decide(
+    @Param("id") id: string,
+    @Param("approvalId") approvalId: string,
+    @Body() body: Decision,
+  ) {
+    const run = await this.db.run.findUnique({ where: { id } });
+    if (!run) throw new NotFoundException();
+    const approval = await this.db.approval.findFirst({ where: { id: approvalId, runId: id } });
+    if (!approval) throw new NotFoundException();
+    if (terminal.includes(run.status) || run.cancelRequested) {
+      await this.db.approval.updateMany({
+        where: { id: approvalId, runId: id, status: "PENDING" },
+        data: { status: "INVALIDATED", decidedAt: new Date() },
+      });
+      throw new ConflictException("任务已经结束，审批无法再决定");
+    }
+    return this.db.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM "Run" WHERE id = ${id} FOR UPDATE`;
+      const decision = body.decision === "approve" ? "APPROVED" : "REJECTED";
+      const current = await tx.approval.findUniqueOrThrow({ where: { id: approvalId } });
+      if (current.status !== "PENDING") {
+        if (current.status === decision) return { approval: current, run, repeated: true };
+        throw new ConflictException("审批已经决定，不能改判");
+      }
+      const live = await tx.run.findUniqueOrThrow({ where: { id } });
+      if (live.status !== "WAITING_APPROVAL")
+        throw new ConflictException("任务当前不在等待审批状态");
+      const approval = await tx.approval.update({
+        where: { id: approvalId },
+        data: { status: decision, decidedAt: new Date(), note: body.note ?? null },
+      });
+      await tx.event.create({
+        data: {
+          runId: id,
+          key: `approval-decided-${approval.id}`,
+          type: "APPROVAL_DECIDED",
+          data: {
+            approval_id: approval.id, decision, action_sha256: approval.actionSha256,
+            workspace_sha256: approval.workspaceSha256, note: body.note ?? null,
+          },
+        },
+      });
+      // The decision only re-queues; the resumed attempt re-validates the binding and runs the action.
+      const next = await tx.run.update({
+        where: { id },
+        data: { status: "QUEUED", workerId: null, leaseUntil: null },
+      });
+      await tx.outbox.create({ data: { runId: id } });
+      return { approval, run: next, repeated: false };
+    });
+  }
+  @Get("internal/runs/active") async active(@Headers("authorization") token: string) {
+    this.authorize(token);
+    const runs = await this.db.run.findMany({
+      where: { status: { in: ["RUNNING", "VERIFYING"] }, leaseUntil: { gt: new Date() } },
+      select: { id: true },
+    });
+    return { runs: runs.map((run) => run.id) };
+  }
+  @Post("internal/runs/:id/resume-plan") async resumePlan(
+    @Param("id") id: string,
+    @Headers("authorization") token: string,
+    @Body() body: Ownership,
+  ) {
+    this.authorize(token);
+    const run = await this.db.run.findUnique({ where: { id } });
+    if (!run) throw new NotFoundException();
+    if (run.workerId !== body.workerId || run.generation !== body.generation ||
+        !run.leaseUntil || run.leaseUntil < new Date())
+      throw new ConflictException("运行所有权失效");
+    const checkpoint = await this.db.resumable(id, run.generation);
+    if (!checkpoint) return { mode: "fresh" };
+    if (checkpoint.phase !== "awaiting_approval") return { mode: "restore", checkpoint, approval: null };
+    const approval = await this.db.approval.findFirst({
+      where: { runId: id, checkpointId: checkpoint.id }, orderBy: { requestedAt: "desc" },
+    });
+    if (!approval) return { mode: "wait", checkpoint, approval: null };
+    return approval.status === "PENDING"
+      ? { mode: "wait", checkpoint, approval }
+      : { mode: "restore", checkpoint, approval };
+  }
+  @Post("internal/runs/:id/approvals") async requestApproval(
+    @Param("id") id: string,
+    @Headers("authorization") token: string,
+    @Body() body: ApprovalRequest,
+  ) {
+    this.authorize(token);
+    return this.db.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM "Run" WHERE id = ${id} FOR UPDATE`;
+      const run = await tx.run.findUnique({ where: { id } });
+      if (!run) throw new NotFoundException();
+      const existing = await tx.approval.findUnique({
+        where: { runId_checkpointId_actionSha256: {
+          runId: id, checkpointId: body.checkpoint.id, actionSha256: body.actionSha256 } },
+      });
+      if (existing) {
+        // A retried request for the same action and checkpoint must not create a second row.
+        if (existing.status !== "PENDING") throw new ConflictException("该动作的审批已经决定");
+        return existing;
+      }
+      if (terminal.includes(run.status) || run.cancelRequested) throw new ConflictException("任务已经结束");
+      if (run.workerId !== body.workerId || run.generation !== body.generation ||
+          !run.leaseUntil || run.leaseUntil < new Date())
+        throw new ConflictException("运行所有权失效");
+      if (run.status !== "RUNNING") throw new ConflictException("只有执行中的任务可以提交审批");
+      if (!/^[0-9a-f]{32}$/.test(String(body.checkpoint.id)) || !Number.isInteger(body.checkpoint.sequence))
+        throw new BadRequestException("检查点元数据无效");
+      const checkpoint = (await tx.event.findMany({ where: { runId: id, type: "CHECKPOINT_SAVED" } }))
+        .map((event) => event.data as any)
+        .find((data) => data?.id === body.checkpoint.id);
+      // A resumed attempt re-requests approval for a checkpoint recorded by an earlier attempt,
+      // so the checkpoint's own generation may be older than this attempt's.
+      if (!checkpoint || checkpoint.generation > body.generation ||
+          checkpoint.sequence !== body.checkpoint.sequence || checkpoint.phase !== "awaiting_approval" ||
+          checkpoint.workspace_sha256 !== body.workspaceSha256 || checkpoint.action_sha256 !== body.actionSha256)
+        throw new BadRequestException("审批必须绑定已登记且与动作一致的检查点");
+      const pending = await tx.approval.findFirst({ where: { runId: id, status: "PENDING" } });
+      if (pending) throw new ConflictException("已有待决定的审批");
+      const approval = await tx.approval.create({
+        data: {
+          runId: id, generation: body.generation, action: body.action as Prisma.InputJsonValue,
+          actionSha256: body.actionSha256, reason: body.reason, targets: body.targets as Prisma.InputJsonValue,
+          policy: body.policy, workspaceSha256: body.workspaceSha256, checkpointId: body.checkpoint.id,
+          checkpointSequence: body.checkpoint.sequence,
+        },
+      });
+      await tx.event.create({
+        data: {
+          runId: id, key: `approval-${approval.id}`, type: "APPROVAL_REQUESTED",
+          data: {
+            approval_id: approval.id, action: body.action as Prisma.InputJsonValue,
+            action_sha256: body.actionSha256,
+            reason: body.reason, targets: body.targets as Prisma.InputJsonValue, policy: body.policy,
+            workspace_sha256: body.workspaceSha256, generation: body.generation,
+            checkpoint: { id: body.checkpoint.id, sequence: body.checkpoint.sequence },
+          },
+        },
+      });
+      // The attempt stops here: no worker owns the run until a decision re-queues it.
+      await tx.run.update({ where: { id }, data: { status: "WAITING_APPROVAL", leaseUntil: null } });
+      return approval;
     });
   }
   @Post("runs/:id/cancel") async cancel(@Param("id") id: string) {
@@ -343,11 +589,18 @@ class Api {
         },
         update: {},
       });
+      // A run that is only waiting on a person can stop immediately; a running one stops at its next boundary.
+      const stopped = run.status === "QUEUED" || run.status === "WAITING_APPROVAL";
+      if (stopped)
+        await tx.approval.updateMany({
+          where: { runId: id, status: "PENDING" },
+          data: { status: "INVALIDATED", decidedAt: new Date() },
+        });
       return tx.run.update({
         where: { id },
         data: {
           cancelRequested: true,
-          ...(run.status === "QUEUED" ? { status: "CANCELLED" } : {}),
+          ...(stopped ? { status: "CANCELLED", workerId: null, leaseUntil: null } : {}),
         },
       });
     });
@@ -458,12 +711,16 @@ class Api {
         throw new ConflictException("任务已经结束");
       if (body.type === "CHECKPOINT_SAVED") {
         const cp = body.data;
+        const awaiting = cp.phase === "awaiting_approval";
         if (body.status || run.status !== "RUNNING" || cp.generation !== run.generation ||
             typeof cp.id !== "string" || !/^[0-9a-f]{32}$/.test(cp.id) ||
             typeof cp.sha256 !== "string" || !/^[0-9a-f]{64}$/.test(cp.sha256) ||
             typeof cp.workspace_sha256 !== "string" || !/^[0-9a-f]{64}$/.test(cp.workspace_sha256) ||
             !Number.isInteger(cp.sequence) || Number(cp.sequence) < 1 ||
-            !["ready", "submitted", "stopped"].includes(String(cp.phase)))
+            !["ready", "submitted", "stopped", "awaiting_approval"].includes(String(cp.phase)) ||
+            (awaiting
+              ? typeof cp.action_sha256 !== "string" || !/^[0-9a-f]{64}$/.test(String(cp.action_sha256))
+              : cp.action_sha256 !== null && cp.action_sha256 !== undefined))
           throw new BadRequestException("Checkpoint 元数据或执行边界无效");
         const previous = await tx.event.findFirst({
           where: { runId: id, type: "CHECKPOINT_SAVED" }, orderBy: { id: "desc" },

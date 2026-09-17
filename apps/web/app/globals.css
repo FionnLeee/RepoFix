@@ -331,6 +331,38 @@ p {
   background: #eaf0ff;
   color: var(--blue);
 }
+.status.waiting_approval {
+  background: #fdf3e2;
+  color: #96631a;
+}
+.approval {
+  margin: 0 25px 18px;
+  padding: 16px 18px;
+  border: 1px solid #ecd9b6;
+  border-left: 3px solid #d79a35;
+  border-radius: 8px;
+  background: #fffaf1;
+  font-size: 12px;
+}
+.approval-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: #96631a;
+  margin-bottom: 10px;
+}
+.approval p {
+  margin: 8px 0;
+  color: var(--muted);
+}
+.approval .approval-binding {
+  font-family: ui-monospace, monospace;
+  font-size: 11px;
+  color: #96631a;
+}
+.approval .task-actions {
+  margin-top: 12px;
+}
 .tabs {
   display: flex;
   gap: 27px;

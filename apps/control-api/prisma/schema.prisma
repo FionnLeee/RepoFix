@@ -17,6 +17,8 @@ model Run {
   project Project? @relation(fields: [projectId], references: [id])
   memoryEnabled Boolean @default(false)
   compactRequested Int @default(0)
+  approvalPolicy String @default("auto")
+  recoveryAttempts Int @default(0)
   status String @default("QUEUED")
   workerId String?
   generation Int @default(0)
@@ -26,7 +28,28 @@ model Run {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
   events Event[]
+  approvals Approval[]
   @@index([status, leaseUntil])
+}
+model Approval {
+  id String @id @default(uuid())
+  runId String
+  run Run @relation(fields: [runId], references: [id])
+  generation Int
+  status String @default("PENDING")
+  action Json
+  actionSha256 String
+  reason String
+  targets Json
+  policy String
+  workspaceSha256 String
+  checkpointId String
+  checkpointSequence Int
+  note String?
+  requestedAt DateTime @default(now())
+  decidedAt DateTime?
+  @@unique([runId, checkpointId, actionSha256])
+  @@index([runId, status])
 }
 model Project {
   id String @id
