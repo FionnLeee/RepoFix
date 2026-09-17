@@ -318,12 +318,14 @@ class TracedAgent(DefaultAgent):
     def execute_actions(self, message):
         if self.approval_policy != "off" and self.request_approval:
             from repopilot.checkpoint import checksum
-            action = (message.get("extra", {}).get("actions") or [None])[0]
-            if isinstance(action, dict):
+            # One replay is authorised at a time, and the gate covers the whole step: a
+            # message that carries several actions must not slip a later write past it.
+            approved, self.approved_action_sha = self.approved_action_sha, None
+            for action in message.get("extra", {}).get("actions") or []:
+                if not isinstance(action, dict) or checksum(action) == approved:
+                    continue
                 verdict = evaluate_policy(action.get("command"), self.allowed_paths, self.approval_policy)
-                approved = self.approved_action_sha == checksum(action)
-                self.approved_action_sha = None
-                if verdict["requires_approval"] and not approved:
+                if verdict["requires_approval"]:
                     self.pause_for_approval(action, verdict)
         try:
             result = super().execute_actions(message)

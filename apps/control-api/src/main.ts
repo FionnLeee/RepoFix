@@ -221,7 +221,8 @@ class Store extends PrismaClient implements OnModuleInit, OnModuleDestroy {
         // The next attempt will run as the following generation; its own checkpoints are the
         // candidates it may resume from.
         const resume = await this.resumable(run.id, run.generation + 1);
-        const recover = !!resume && !run.cancelRequested && run.recoveryAttempts < MAX_RECOVERY_ATTEMPTS;
+        const cancelled = run.cancelRequested;
+        const recover = !cancelled && !!resume && run.recoveryAttempts < MAX_RECOVERY_ATTEMPTS;
         await this.$transaction(async (tx) => {
           const changed = await tx.run.updateMany({
             where: {
@@ -232,7 +233,7 @@ class Store extends PrismaClient implements OnModuleInit, OnModuleDestroy {
             },
             data: recover
               ? { status: "QUEUED", workerId: null, leaseUntil: null, recoveryAttempts: { increment: 1 } }
-              : { status: "INTERRUPTED", workerId: null, leaseUntil: null },
+              : { status: cancelled ? "CANCELLED" : "INTERRUPTED", workerId: null, leaseUntil: null },
           });
           if (!changed.count) return;
           if (recover) {
@@ -252,6 +253,16 @@ class Store extends PrismaClient implements OnModuleInit, OnModuleDestroy {
               },
             });
             await tx.outbox.create({ data: { runId: run.id } });
+          } else if (cancelled) {
+            // The attempt is gone, so no worker will report the cancellation it was asked for.
+            await tx.event.create({
+              data: {
+                runId: run.id,
+                key: `cancelled-${run.generation}`,
+                type: "CANCELLED",
+                data: { reason: "任务已请求取消；持有该次尝试的 Worker 失联，按取消结束。" },
+              },
+            });
           } else {
             await tx.event.create({
               data: {

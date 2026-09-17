@@ -96,16 +96,27 @@ expired = create()
 client.post(
     f"/internal/runs/{expired}/claim", json={"workerId": "lost-worker-test"}, headers=headers
 ).raise_for_status()
+# A cancelled run is stopped by the worker holding it; when that worker is lost instead, the
+# coordinator has to finish the cancellation the user asked for.
+abandoned = create()
+client.post(
+    f"/internal/runs/{abandoned}/claim", json={"workerId": "lost-worker-test"}, headers=headers
+).raise_for_status()
+assert client.post(f"/runs/{abandoned}/cancel", json={}).json()["status"] == "RUNNING"
 deadline = time.monotonic() + 60
 while time.monotonic() < deadline:
     detail = client.get(f"/runs/{expired}").json()
-    if detail["status"] == "INTERRUPTED":
+    abandoned_detail = client.get(f"/runs/{abandoned}").json()
+    if detail["status"] == "INTERRUPTED" and abandoned_detail["status"] == "CANCELLED":
         break
     time.sleep(2)
 assert detail["status"] == "INTERRUPTED"
 assert any(e["type"] == "INTERRUPTED" and "没有已登记的可恢复检查点" in e["data"]["reason"]
            for e in detail["events"])
 checks.append("expired_lease_without_checkpoint_marked_interrupted")
+assert abandoned_detail["status"] == "CANCELLED" and abandoned_detail["cancelRequested"] is True
+assert any(e["type"] == "CANCELLED" and "已请求取消" in e["data"]["reason"] for e in abandoned_detail["events"])
+checks.append("cancelled_run_whose_worker_is_lost_still_ends_as_cancelled")
 
 # M3: version-bound approvals, their decision, and the resume plan a new generation receives.
 paused_run = create()
@@ -213,7 +224,7 @@ checks.append("cancel_invalidates_a_pending_approval")
 
 report = {
     "checks": checks,
-    "run_ids": [cancelled, owned, expired, paused_run, invalidated],
+    "run_ids": [cancelled, owned, expired, abandoned, paused_run, invalidated],
     "note": "Synthetic control-plane verification, no model calls.",
 }
 path = root / "runtime" / "validation" / "protocol.json"

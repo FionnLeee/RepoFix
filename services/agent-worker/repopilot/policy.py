@@ -22,28 +22,45 @@ WORKSPACE = "/workspace"
 REDIRECT = re.compile(r"(?:^|[\s;|&()\w])(?:[0-9])?(>>?)(?![&>])\s*([^\s;&|<>()]+)")
 # Shell separators; quoted separators are blanked out before splitting.
 SEPARATOR = re.compile(r"&&|\|\||[;&|\n]")
-HEREDOC = re.compile(r"<<-?\s*['\"]?[A-Za-z_][A-Za-z0-9_]*")
+# A heredoc opener; group 1 is the delimiter that ends the body.
+HEREDOC = re.compile(r"<<-?\s*['\"]?([A-Za-z_][A-Za-z0-9_]*)['\"]?")
 # Python-level writes cannot be resolved to paths, so they only widen the strict policy.
 PYTHON_WRITE = re.compile(r"write_text\s*\(|write_bytes\s*\(|\.write\s*\(|open\s*\([^)]*,\s*['\"][wa]")
 WRITE_TOOLS = {"tee", "cp", "mv", "rm", "unlink", "sed", "truncate", "install", "touch", "dd", "mkdir", "rmdir", "ln"}
 
 
 def _shell_view(command):
-    """Command text with quoted regions blanked and the heredoc body dropped."""
-    heredoc = HEREDOC.search(command)
-    if heredoc:
-        command = command[: heredoc.start()]
-    view, quote = [], None
-    for char in command:
-        if quote:
-            quote = None if char == quote else quote
-            view.append(" ")
-        elif char in "'\"":
-            quote = char
-            view.append(" ")
-        else:
-            view.append(char)
-    return "".join(view)
+    """Command text with quoted regions blanked and heredoc bodies dropped.
+
+    A heredoc body is data, but the commands that follow a finished heredoc are still
+    shell syntax: only the body is dropped, not everything after the opener, or a write
+    placed after the terminator would never be seen. An unterminated heredoc leaves the
+    rest of the command inside its body, which is the conservative reading.
+    """
+    view, quote, pending = [], None, None
+    for line in command.split("\n"):
+        if pending is not None:
+            pending = None if line.strip() == pending else pending
+            continue
+        blanked, opener = [], None
+        for index, char in enumerate(line):
+            if quote:
+                quote = None if char == quote else quote
+                blanked.append(" ")
+            elif char in "'\"":
+                quote = char
+                blanked.append(" ")
+            elif opener is None and line.startswith("<<", index):
+                # Read the delimiter from the original text: it is usually quoted, and the
+                # quoted characters are blanked in the view.
+                match = HEREDOC.match(line, index)
+                opener = match.group(1) if match else None
+                blanked.append(char)
+            else:
+                blanked.append(char)
+        view.append("".join(blanked))
+        pending = opener
+    return "\n".join(view)
 
 
 def _bare(value):

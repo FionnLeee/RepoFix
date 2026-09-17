@@ -53,6 +53,23 @@ def test_quoted_and_heredoc_text_is_data_not_shell_syntax():
                     ["src/order.py"])["targets"] == [{"path": "/src/order.py", "allowed": True}]
 
 
+def test_only_a_heredoc_body_is_data_not_the_commands_after_it():
+    # A write placed after the terminator is still shell syntax; dropping everything from
+    # the opener would have hidden it from the approval gate.
+    verdict = evaluate("cat > src/order.py <<'PY'\nif amount > 0:\n    pass\nPY\necho x > conftest.py",
+                       ["src/order.py"])
+    assert verdict["requires_approval"] is True
+    assert [target["path"] for target in verdict["targets"]] == ["/src/order.py", "/conftest.py"]
+    # A redirect that follows the opener on the same line is a write as well.
+    assert evaluate("cat <<'PY' > src/order.py\ntext\nPY", ["src/order.py"])["targets"] == [
+        {"path": "/src/order.py", "allowed": True}]
+    # Two heredocs in one command: each opener keeps its own body.
+    assert evaluate("cat > a.py <<'E1'\nx > 1\nE1\ncat > b.py <<'E2'\ny > 2\nE2", ["a.py", "b.py"])["targets"] == [
+        {"path": "/a.py", "allowed": True}, {"path": "/b.py", "allowed": True}]
+    # An unterminated heredoc leaves the rest of the command inside its body.
+    assert evaluate("cat > a.py <<'EOF'\nstill > other.py", ["a.py"])["targets"] == [{"path": "/a.py", "allowed": True}]
+
+
 def test_unrecognised_write_forms_are_a_known_limit():
     # Python-level writes are deliberately not modelled: the sandbox and the allowed-path
     # check remain the enforced boundary, and this is reported as a limit, not hidden.

@@ -401,3 +401,31 @@ def test_approval_pause_holds_the_action_and_resumes_in_a_new_generation(tmp_pat
             resumed.checkpoints.load(resumed.checkpoints.latest, for_resume=True)
     finally:
         second.close()
+
+
+@pytest.mark.docker
+def test_a_step_is_gated_as_a_whole_not_only_by_its_first_action(tmp_path, monkeypatch):
+    monkeypatch.setenv("ARTIFACT_ROOT", str(tmp_path))
+    run = {"id": str(uuid.uuid4()), "generation": 1, "mode": "demo", "task": "edit the file"}
+    source = {"a.py": "old"}
+    requests = []
+    actions = [{"command": "echo one > a.py"}, {"command": "echo two > other.py"}]
+
+    def request(payload):
+        requests.append(payload)
+        return {"id": f"approval-{len(requests)}"}
+
+    sandbox = Sandbox(run["id"], lambda *_: None, threading.Event(), files=source)
+    try:
+        agent = TracedAgent(DeterministicModel(outputs=[make_output("edit", actions, cost=0)]), sandbox,
+                            emit=lambda *_: None, cancelled=threading.Event(), system_template="repair",
+                            instance_template="{{task}}", output_path=tmp_path / run["id"] / "trajectory.json")
+        agent.enable_checkpoints(run, source)
+        agent.enable_approvals("auto", ["a.py"], request)
+        with pytest.raises(ApprovalPaused):
+            agent.run(run["task"])
+        # The allowed first action is held back with the step instead of running first.
+        assert read_tree(sandbox) == source
+        assert [payload["action"] for payload in requests] == [{"command": "echo two > other.py"}]
+    finally:
+        sandbox.close()
