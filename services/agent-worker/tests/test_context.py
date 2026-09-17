@@ -10,6 +10,7 @@ from minisweagent.models.test_models import DeterministicModel, make_output
 from qdrant_client import QdrantClient
 from repopilot.context import ContextConfig, ContextManager, project_rules, tokens
 from repopilot.indexing import CodeIndex, chunks, content_hash
+from repopilot.repository import digest
 from repopilot.runtime import Sandbox, TracedAgent
 
 
@@ -156,6 +157,34 @@ def test_context_does_not_use_cached_memory_when_control_plane_unavailable(tmp_p
         manager.prepare(SimpleNamespace(), {})
 
 
+def test_old_workspace_observations_and_test_summary_are_invalidated_without_erasing_history(tmp_path):
+    run = run_fixture()
+    control = Registry(run)
+    old = {"pkg/a.py": "value = 1"}
+    current = {"pkg/a.py": "value = 2"}
+    history = [{"role": "system", "content": "repair"}, {"role": "user", "content": run["task"]},
+        {"role": "assistant", "content": "run development tests", "extra": {"actions": [{"command": "python -m unittest"}]}},
+        {"role": "user", "content": "OLD_TEST_SUCCESS_AND_SOURCE", "extra": {
+            "workspace_sha256": digest(old), "raw_output": "OLD_TEST_SUCCESS_AND_SOURCE"}},
+        {"role": "assistant", "content": "modify file"},
+        {"role": "user", "content": "CURRENT_EDIT_RESULT", "extra": {"workspace_sha256": digest(current)}}]
+    agent = SimpleNamespace(messages=history, full_messages=copy.deepcopy(history), compactions=[], n_calls=2)
+    manager = ContextManager(run, old, lambda *_: None, tmp_path, control, CurrentIndex())
+    for manual in (0, 1):
+        control.memory["compactRequested"] = manual
+        request = manager.prepare(agent, current)
+        text = json.dumps(request)
+        assert "OLD_TEST_SUCCESS_AND_SOURCE" not in text
+        assert "CURRENT_EDIT_RESULT" in text and "earlier workspace version" in text
+        assert agent.messages[3]["content"] == agent.full_messages[3]["content"] == "OLD_TEST_SUCCESS_AND_SOURCE"
+        assert request[-2]["role"] == "assistant" and request[-1]["role"] == "user"
+    summary = manager.state["summary"]
+    assert summary["latest_test"]["stale"] is True
+    assert summary["latest_test"]["workspace_sha256"] == digest(old)
+    report = json.loads((tmp_path / "context" / "call-3.json").read_text())["report"]
+    assert report["stale_observation_count"] == 1
+
+
 @pytest.mark.docker
 def test_full_tool_log_can_be_reread_without_host_path_access(tmp_path, monkeypatch):
     monkeypatch.setenv("ARTIFACT_ROOT", str(tmp_path))
@@ -208,6 +237,7 @@ def test_managed_checkpoint_restores_context_state_and_continues(tmp_path, monke
         reference = original.checkpoints.latest
         checkpoint = original.checkpoints.load(reference, for_resume=True)
         assert checkpoint.state.context_state["compact_seen"] == 2
+        assert checkpoint.state.messages[-1]["extra"]["workspace_sha256"] == digest(checkpoint.files)
     finally:
         first.close()
     second = Sandbox(run["id"], lambda *_: None, threading.Event(), files=checkpoint.files,

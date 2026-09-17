@@ -262,6 +262,12 @@ class TracedAgent(DefaultAgent):
         except Submitted:
             self._checkpoint_safe = True
             raise
+        if self.context_manager:
+            from repopilot.repository import digest
+            from repopilot.repository_runtime import read_tree
+            workspace_hash = digest(read_tree(self.env, quiescent=True))
+            for observation in result:
+                observation.setdefault("extra", {})["workspace_sha256"] = workspace_hash
         self._checkpoint_safe = True
         return result
 

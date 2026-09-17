@@ -116,6 +116,8 @@ docker compose up -d --build --scale worker=2
 - **显式记忆**：仅通过页面或 `POST /projects/<id>/memories` 显式保存，必须引用来源任务和事件；带乐观版本号，可编辑、停用、启用、删除、导出与导入 Markdown。记忆绑定保存时的 commit，commit 变化后标记“待复核”，需用新任务重新确认；创建任务时可关闭记忆读取。Worker 每次调用都从控制端重新读取有效记忆，控制端不可用时不使用缓存；提示中声明记忆和检索结果是证据而非权限。
 - **Checkpoint**：managed 模式的压缩状态与上下文配置纳入 checkpoint 绑定，恢复后沿用同一摘要状态。
 
+managed 工具输出绑定执行后的工作区哈希；后续文件变化时，旧版本输出在请求和最近测试摘要中替换为失效提示，要求重读或重新运行测试。原始内容保留在轨迹中，checkpoint 保留版本绑定。旧版轨迹中没有哈希的输出无法追溯判断。本轮修复后 Linux 测试共 29 项通过，最新上下文专项 8 项通过；部署冒烟确认修改后每次请求排除了 2 条过期输出。
+
 2026-09-16／17 功能验证：Linux Worker 镜像中 `pytest` 28 项通过（含发布索引隔离、修改／删除覆盖层、规则作用域与预算、长历史压缩与记忆撤销、控制端不可用不用缓存、日志回读、managed checkpoint 恢复）；`scripts/context_check.py` 在真实 Qdrant 与本地 embedding 上验证跨项目隔离、记忆停用／删除／版本冲突、commit 变化待复核、手动压缩持久化、不完整或过期构建不可发布；`scripts/context_smoke.py` 完成一次确定性 managed 任务并只读恢复其 checkpoint。这些是功能与故障检查，不是效果评测。managed 模式尚未做真实模型配对实验，不能宣称它提高成功率或节省 token；字节估算偏保守，实际 token 通常更少。
 
 ## 上下文对照与边界

@@ -24,6 +24,15 @@ def excerpt(value, size):
     return raw[:size // 3].decode(errors="ignore") + "\n[omitted; read evidence]\n" + raw[-size // 2:].decode(errors="ignore")
 
 
+def observation_view(message, workspace_hash, size=1800):
+    recorded_hash = message.get("extra", {}).get("workspace_sha256")
+    if recorded_hash and recorded_hash != workspace_hash:
+        return ("[Observation from an earlier workspace version omitted. "
+                "Reread current files or rerun development tests; the original output remains in trajectory.json. "
+                f"Recorded workspace: {recorded_hash}]")
+    return excerpt(str(message.get("content", "")), size)
+
+
 def project_rules(files, paths, byte_limit=16000):
     applicable = {"AGENTS.md"}
     for name in paths:
@@ -112,12 +121,15 @@ class ContextManager:
             chosen_memories.append({k: memory[k] for k in ("id", "version", "scope", "content", "sourceRun", "evidenceRefs", "baseCommit")})
             memory_bytes += tokens(memory["content"])
         refs = [{"path": p, "hash": content_hash(files[p])} for p in retrieval["changed_paths"] if p in files]
+        workspace_hash = digest(files)
         history = [dict(m) for m in agent.messages[2:]]
+        stale_observations = sum(m.get("role") == "user" and bool(m.get("extra", {}).get("workspace_sha256"))
+                                 and m["extra"]["workspace_sha256"] != workspace_hash for m in history)
         before = tokens(fixed + history)
         # Keep full immutable messages on the agent; only shorten the request view.
         for message in history:
             if message.get("role") == "user":
-                message["content"] = excerpt(str(message.get("content", "")), 1800)
+                message["content"] = observation_view(message, workspace_hash)
         manual = authority["compactRequested"] > self.state["compact_seen"]
         compact = manual or tokens(fixed + history) > limit * 0.65
         if compact and history:
@@ -126,7 +138,10 @@ class ContextManager:
                 commands = [a.get("command", "") for a in previous.get("extra", {}).get("actions", [])]
                 if observation.get("role") == "user" and any("unittest" in c or "pytest" in c for c in commands):
                     latest_test = {"command": excerpt("; ".join(commands), 250),
-                                   "observation_excerpt": excerpt(str(observation.get("content", "")), 650),
+                                   "observation_excerpt": observation_view(observation, workspace_hash, 650),
+                                   "workspace_sha256": observation.get("extra", {}).get("workspace_sha256"),
+                                   "stale": bool(observation.get("extra", {}).get("workspace_sha256")
+                                                 and observation["extra"]["workspace_sha256"] != workspace_hash),
                                    "verified": False}
             summary = TaskSummary(goal="See the verbatim task above; it remains authoritative.",
                 constraints=["Allowed paths: " + ", ".join(self.run["spec"]["allowedPaths"]),
@@ -143,7 +158,7 @@ class ContextManager:
             while history and history[0].get("role") != "assistant":
                 history.pop(0)
         self.state["compact_seen"] = authority["compactRequested"]
-        dynamic = {"workspace_hash": digest(files), "changed_paths": retrieval["changed_paths"],
+        dynamic = {"workspace_hash": workspace_hash, "changed_paths": retrieval["changed_paths"],
                    "memories": chosen_memories, "evidence": [],
                    "summary": self.state["summary"] if compact else None}
 
@@ -166,7 +181,9 @@ class ContextManager:
         if tokens(request()) > limit:
             # Do not silently drop the task, project rules, or the latest action/result pair.
             raise ValueError("Latest action and required context exceed the configured input budget")
-        messages = request()
+        # Match the model adapter's request projection; do not retain raw outputs in extra
+        # after their displayed content has been shortened or invalidated.
+        messages = [{k: v for k, v in m.items() if k != "extra"} for m in request()]
         estimate = tokens(messages)
         report = {"call": agent.n_calls + 1, "estimated_input_tokens": estimate, "input_limit": limit,
                   "window": self.config.window, "output_reserve": self.config.output,
@@ -176,6 +193,7 @@ class ContextManager:
                   "rules": [{k: r[k] for k in ("path", "scope", "hash")} for r in rules],
                   "memories": [{"id": m["id"], "version": m["version"]} for m in dynamic["memories"]],
                   "omitted_memories": omitted_memories, "retrieval": retrieval,
+                  "stale_observation_count": stale_observations,
                   "evidence": [{k: p[k] for k in ("path", "start", "end", "file_hash", "chunk_hash")} for p in dynamic["evidence"]]}
         self.last_estimate = estimate
         if compact:
