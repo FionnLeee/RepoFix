@@ -16,3 +16,6 @@ playwright-report/
 /docs/
 *.md
 !/README.md
+
+# 官方 harness 的评测日志（本地证据，不入库）
+logs/
