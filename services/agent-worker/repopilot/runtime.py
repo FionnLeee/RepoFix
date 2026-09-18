@@ -41,12 +41,14 @@ class OwnershipLost(RuntimeError):
 
 class Sandbox:
     def __init__(self, run_id: str, emit, cancelled: threading.Event, verification: bool = False, files=None,
-                 image=None, workspace: str = "/workspace", writable: bool = False, memory: str = "256m"):
+                 image=None, workspace: str = "/workspace", writable: bool = False, memory: str = "256m",
+                 user: str = "1000:1000"):
         self.client = docker.from_env(timeout=45)
         self.emit, self.cancelled, self.index = emit, cancelled, 0
         self.tracing = None
         self.workspace = workspace
-        self.config = {"network": "none", "memory": memory, "user": "1000:1000", "workspace": workspace,
+        self.user = user
+        self.config = {"network": "none", "memory": memory, "user": user, "workspace": workspace,
                        "read_only_root": not writable}
         self.initial_paths = set(files) if files is not None else {"pricing.py", "test_pricing.py"}
         self.log_folder = Path(os.getenv("ARTIFACT_ROOT", "runtime/artifacts")) / run_id / "tool-logs"
@@ -60,7 +62,7 @@ class Sandbox:
             ["sleep", "600"],
             detach=True,
             working_dir=workspace,
-            user="1000:1000",
+            user=user,
             network_mode="none",
             read_only=not writable,
             mem_limit=memory,
@@ -87,7 +89,7 @@ class Sandbox:
         script = "import sys; from pathlib import Path; p=Path(sys.argv[3])/sys.argv[1]; p.parent.mkdir(parents=True,exist_ok=True); p.write_text(sys.argv[2],encoding='utf-8')"
         for name, value in files.items():
             safe_path(name)
-            result = self.container.exec_run(["python", "-I", "-c", script, name, value, self.workspace], user="1000:1000")
+            result = self.container.exec_run(["python", "-I", "-c", script, name, value, self.workspace], user=self.user)
             if result.exit_code:
                 raise RuntimeError("Cannot initialize sandbox files")
 
@@ -132,7 +134,7 @@ class Sandbox:
         started = time.monotonic()
         wall = time.time()
         result = self.container.exec_run(
-            ["sh", "-c", script, "repopilot-tool", command, output_path], workdir=self.workspace, user="1000:1000"
+            ["sh", "-c", script, "repopilot-tool", command, output_path], workdir=self.workspace, user=self.user
         )
         output = {
             "output": result.output.decode(errors="replace"),

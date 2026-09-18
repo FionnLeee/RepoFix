@@ -177,7 +177,7 @@ def image_candidate(sandbox, workspace):
     def git(*args):
         return sandbox.container.exec_run(
             ["git", "-c", "core.fileMode=false", "-c", "core.autocrlf=false", "-c", "safe.directory=" + workspace,
-             "-C", workspace, *args], user="1000:1000")
+             "-C", workspace, *args], user=sandbox.user)
 
     staged = git("add", "-A", "--", ".")
     if staged.exit_code:
@@ -185,7 +185,7 @@ def image_candidate(sandbox, workspace):
         if "index.lock" in output:
             # A step whose command the sandbox killed can leave the lock behind; the workspace is
             # a disposable container, so clearing it and staging again is safe.
-            sandbox.container.exec_run(["rm", "-f", ".git/index.lock"], workdir=workspace, user="1000:1000")
+            sandbox.container.exec_run(["rm", "-f", ".git/index.lock"], workdir=workspace, user=sandbox.user)
             staged = git("add", "-A", "--", ".")
             output = staged.output.decode(errors="replace")
         if staged.exit_code:
@@ -285,8 +285,11 @@ def execute_image_repository_run(run, spec, emit, cancelled, control=None, quota
         raise RuntimeError(f"An image workspace has no checkpoint to {plan['mode']} from")
     # A pinned conda environment plus the repository's own tooling needs more than a snapshot
     # sandbox: an instance image runs out of 256 MB while importing it.
+    # The official images expect to be driven as root (their own testbed layout is root-owned),
+    # and their harness does exactly that. Isolation still comes from no network, no caps,
+    # no-new-privileges and a disposable container.
     sandbox = Sandbox(run["id"], emit, cancelled, files={}, image=spec.sandboxImage,
-                      workspace=spec.workspacePath, writable=True, memory=IMAGE_MEMORY)
+                      workspace=spec.workspacePath, writable=True, memory=IMAGE_MEMORY, user="0:0")
     sandbox.tracing = tracing
     provenance = {
         "source": spec.source, "commit": spec.commit, "subdir": spec.subdir,
