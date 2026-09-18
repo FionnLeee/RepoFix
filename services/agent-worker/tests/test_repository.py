@@ -1,13 +1,50 @@
 import json
+import os
 import threading
 import uuid
 from pathlib import Path
 
 import pytest
 from minisweagent.models.test_models import DeterministicModel
+from repopilot.baseline import task_definitions
 from repopilot.repository import RepositoryTask, safe_path
-from repopilot.repository_runtime import make_patch_and_reapply, read_tree, replay_patch, verify
+from repopilot.repository_runtime import (
+    execute_repository_run,
+    make_patch_and_reapply,
+    read_tree,
+    replay_patch,
+    verify,
+)
 from repopilot.runtime import Sandbox, TracedAgent
+
+
+def test_harness_verified_tasks_carry_no_acceptance_tests():
+    base = {"source": "registered:test", "commit": "a" * 40, "allowedPaths": ["src/a.py"]}
+    assert RepositoryTask.model_validate({**base, "verificationMode": "harness"}).verificationFiles == {}
+    assert RepositoryTask.model_validate({**base, "verificationFiles": {"test_a.py": "x"}}).verificationMode == "tests"
+    for change in ({"verificationMode": "harness", "verificationFiles": {"test_a.py": "x"}}, {}):
+        with pytest.raises(ValueError):
+            RepositoryTask.model_validate({**base, **change})
+
+
+@pytest.mark.docker
+def test_a_harness_verified_run_delivers_a_patch_without_local_acceptance(tmp_path, monkeypatch):
+    """SWE-bench 式运行：本机只证明补丁能干净地重放到固定提交，判定交给官方 harness。"""
+    monkeypatch.setenv("ARTIFACT_ROOT", str(tmp_path))
+    registered = Path(os.getenv("REPOSITORY_ROOT", "runtime/repositories")) / "baseline-v1"
+    snapshot = json.loads(next(registered.glob("*.json")).read_text(encoding="utf-8"))
+    task = next(t for t in task_definitions() if t["id"] == "checkout")
+    spec = RepositoryTask(source="registered:baseline-v1", commit=snapshot["commit"], subdir="checkout",
+                          allowedPaths=sorted(task["reference"]), verificationMode="harness",
+                          testCommand="python -m unittest discover -v")
+    run = {"id": str(uuid.uuid4()), "generation": 1, "mode": "demo", "baselineId": "checkout",
+           "task": task["task"], "spec": spec.model_dump(), "reviewPolicy": "off"}
+    events = []
+    result = execute_repository_run(run, lambda kind, data, status=None: events.append(kind), threading.Event())
+    assert result["verification"] == {"passed": None, "delegated": "swebench-harness", "output": "",
+                                      "baseline": None, "candidate": None, "patch_replayed": True}
+    assert result["patch"] and "VERIFICATION_DELEGATED" in events and "CANDIDATE" in events
+    assert result["changed_files"] and "ACCEPTANCE" not in " ".join(events)
 
 
 def test_repository_contract_rejects_traversal_and_arbitrary_hosts():

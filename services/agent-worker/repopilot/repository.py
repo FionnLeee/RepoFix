@@ -7,9 +7,10 @@ import os
 import re
 import tarfile
 from pathlib import Path, PurePosixPath
+from typing import Literal
 
 import httpx
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 MAX_BYTES = 4 * 1024 * 1024
 MAX_FILES = 200
@@ -49,8 +50,19 @@ class RepositoryTask(BaseModel):
     commit: str = Field(pattern=r"^[0-9a-f]{40}$")
     subdir: str = Field(default="", max_length=200)
     allowedPaths: list[str] = Field(min_length=1, max_length=30)
-    verificationFiles: dict[str, str]
+    instanceId: str | None = Field(default=None, max_length=120)
+    verificationMode: Literal["tests", "harness"] = "tests"
+    verificationFiles: dict[str, str] = Field(default_factory=dict)
     testCommand: str = Field(default="python -m unittest discover -v", min_length=1, max_length=1000)
+
+    @model_validator(mode="after")
+    def verification_shape(self):
+        """Either this worker proves the patch, or it hands the proof to an external harness."""
+        if self.verificationMode == "harness" and self.verificationFiles:
+            raise ValueError("A harness-verified task must not carry acceptance tests")
+        if self.verificationMode == "tests" and not self.verificationFiles:
+            raise ValueError("Acceptance tests are required unless an external harness verifies the patch")
+        return self
 
     @field_validator("source")
     @classmethod
@@ -78,6 +90,8 @@ class RepositoryTask(BaseModel):
     @field_validator("verificationFiles")
     @classmethod
     def tests_shape(cls, value):
+        if not value:
+            return value  # a harness-verified task carries none; the model validator decides
         validate_files(value)
         if len(value) > 20 or not any(re.fullmatch(r"test_[a-zA-Z0-9_]+\.py", name) for name in value):
             raise ValueError("Provide top-level test_*.py unittest verification files")
