@@ -54,6 +54,12 @@ class RepositoryTask(BaseModel):
     verificationMode: Literal["tests", "harness"] = "tests"
     verificationFiles: dict[str, str] = Field(default_factory=dict)
     testCommand: str = Field(default="python -m unittest discover -v", min_length=1, max_length=1000)
+    # A snapshot run copies a bounded text tree into a bare sandbox. An image run works inside
+    # the repository that a prepared image already carries (SWE-bench instances ship their own
+    # environment that way), so there is no snapshot to bound and no read-only root.
+    workspaceMode: Literal["snapshot", "image"] = "snapshot"
+    sandboxImage: str | None = Field(default=None, max_length=200)
+    workspacePath: str = Field(default="/workspace", max_length=200)
 
     @model_validator(mode="after")
     def verification_shape(self):
@@ -63,6 +69,36 @@ class RepositoryTask(BaseModel):
         if self.verificationMode == "tests" and not self.verificationFiles:
             raise ValueError("Acceptance tests are required unless an external harness verifies the patch")
         return self
+
+    @model_validator(mode="after")
+    def workspace_shape(self):
+        """An image workspace is the image's own repository: no snapshot to bound or restore."""
+        if self.workspaceMode == "image":
+            if not self.sandboxImage:
+                raise ValueError("An image workspace needs the image that carries the repository")
+            if self.subdir:
+                raise ValueError("An image workspace uses the whole repository, not a subtree")
+            if self.verificationMode != "harness":
+                raise ValueError("An image workspace cannot run local acceptance: no bounded snapshot")
+        if self.workspaceMode == "snapshot" and self.sandboxImage:
+            raise ValueError("A snapshot workspace uses the configured sandbox image")
+        return self
+
+    @field_validator("sandboxImage")
+    @classmethod
+    def image_shape(cls, value):
+        if value is None:
+            return value
+        if not re.fullmatch(r"[a-zA-Z0-9][\w./-]*(?::[\w.-]+)?(?:@sha256:[0-9a-f]{64})?", value):
+            raise ValueError("Use a plain image reference such as swebench/sweb.eval.x86_64.repo_1776_id:latest")
+        return value
+
+    @field_validator("workspacePath")
+    @classmethod
+    def workspace_shape_path(cls, value):
+        if not re.fullmatch(r"/[\w./-]*", value) or ".." in value.split("/"):
+            raise ValueError("Workspace path must be absolute and free of traversal")
+        return value.rstrip("/") or "/"
 
     @field_validator("source")
     @classmethod

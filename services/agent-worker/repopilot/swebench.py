@@ -36,33 +36,56 @@ def default_test_command(instance):
     return "python -m pytest -q " + " ".join(files[:5]) if files else "python -m pytest -q"
 
 
-def task_from_instance(instance, allowed_paths=None, subdir="", context_mode="managed", review_policy="auto"):
+# SWE-bench images keep the pinned interpreter in a conda env that the official evaluation
+# scripts activate; without that activation `python` is the bare base env, which neither has
+# the dependencies nor a Python new enough for the checkout.
+CONDA_PREFIX = "bash -lc 'source /opt/miniconda3/bin/activate && conda activate testbed && {command}'"
+
+
+def image_test_command(instance, limit=3):
+    """The development command to use inside an instance image: its own failing tests."""
+    tests = [test for test in failing_tests(instance) if " " not in test][:limit]
+    command = "python -m pytest -q " + " ".join(tests) if tests else "python -m pytest -q"
+    return CONDA_PREFIX.format(command=command)
+
+
+def task_from_instance(instance, allowed_paths=None, subdir="", context_mode="full", review_policy="auto",
+                       workspace_mode="image"):
     """A repository task for one instance, judged by the official harness.
 
-    ``allowedPaths`` defaults to the files the instance's own patch touches. That is a wider
-    hint than a coder normally gets from a task statement, so runs translated this way are not
-    comparable with leaderboard numbers; pass an explicit list to narrow it.
+    The default workspace mode is ``image``: an instance image already carries its checkout and
+    its pinned environment, and RepoPilot's bounded snapshot (200 text files, 100 KB each) does
+    not fit a real repository. ``allowedPaths`` defaults to the files the instance's own patch
+    touches — a wider hint than a task statement normally gives, so runs translated this way are
+    not comparable with leaderboard numbers; pass an explicit list to narrow it.
     """
     paths = allowed_paths or changed_files(instance.get("patch", ""))
     if not paths:
         raise ValueError("Instance has no patch to bound the allowed paths; pass allowed_paths")
     if not instance.get("base_commit") or not instance.get("problem_statement"):
         raise ValueError("Instance needs base_commit and problem_statement")
+    if workspace_mode == "image" and not instance.get("image"):
+        raise ValueError("An image workspace needs the instance's own image")
+    spec = {
+        "source": f"https://github.com/{instance['repo']}",
+        "commit": instance["base_commit"],
+        "subdir": subdir,
+        "allowedPaths": paths,
+        "verificationMode": "harness",
+        "instanceId": instance["instance_id"],
+        "testCommand": image_test_command(instance) if workspace_mode == "image" else default_test_command(instance),
+        "workspaceMode": workspace_mode,
+    }
+    if workspace_mode == "image":
+        spec["sandboxImage"] = instance["image"]
+        spec["workspacePath"] = "/testbed"
     return {
         "mode": "live",
         "task": instance["problem_statement"],
         "contextMode": context_mode,
         "memoryEnabled": False,
         "reviewPolicy": review_policy,
-        "spec": {
-            "source": f"https://github.com/{instance['repo']}",
-            "commit": instance["base_commit"],
-            "subdir": subdir,
-            "allowedPaths": paths,
-            "verificationMode": "harness",
-            "instanceId": instance["instance_id"],
-            "testCommand": default_test_command(instance),
-        },
+        "spec": spec,
     }
 
 

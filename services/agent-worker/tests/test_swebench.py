@@ -16,6 +16,7 @@ INSTANCE = {
     "test_patch": "diff --git a/tests/forms_tests/tests.py b/tests/forms_tests/tests.py\n",
     "FAIL_TO_PASS": '["tests/forms_tests/tests.py::FormsTestCase::test_a"]',
     "PASS_TO_PASS": "[]",
+    "image": "swebench/sweb.eval.x86_64.django_1776_django-11099:latest",
 }
 
 
@@ -32,11 +33,29 @@ def test_the_changed_files_of_an_instance_patch_bound_the_task():
     assert spec["source"] == "https://github.com/django/django"
     assert spec["commit"] == INSTANCE["base_commit"] and spec["allowedPaths"] == ["django/forms/fields.py"]
     assert spec["verificationMode"] == "harness" and spec["instanceId"] == INSTANCE["instance_id"]
-    # The translated spec is one this worker accepts: harness mode carries no local tests.
-    assert RepositoryTask.model_validate(spec).verificationMode == "harness"
-    assert RepositoryTask.model_validate(spec).verificationFiles == {}
+    # The default workspace is the instance's own image: a real repository does not fit the
+    # bounded snapshot, and the harness owns the verdict.
+    assert spec["workspaceMode"] == "image" and spec["workspacePath"] == "/testbed"
+    assert spec["sandboxImage"] == INSTANCE["image"]
+    translated = RepositoryTask.model_validate(spec)
+    assert translated.verificationMode == "harness" and translated.verificationFiles == {}
+    assert task["contextMode"] == "full"  # no bounded snapshot to index or remember
     with pytest.raises(ValueError):
         swebench.task_from_instance({**INSTANCE, "patch": ""})
+    with pytest.raises(ValueError):
+        swebench.task_from_instance({**INSTANCE, "image": None})
+    # A snapshot workspace is still available for small, self-contained repositories.
+    snapshot = swebench.task_from_instance(INSTANCE, workspace_mode="snapshot")
+    assert snapshot["spec"]["workspaceMode"] == "snapshot" and "sandboxImage" not in snapshot["spec"]
+    assert RepositoryTask.model_validate(snapshot["spec"]).workspaceMode == "snapshot"
+
+
+def test_an_image_task_runs_its_tests_in_the_instances_conda_environment():
+    """Without the activation the bare base env has neither the deps nor a new enough Python."""
+    assert swebench.image_test_command(INSTANCE).startswith("bash -lc 'source /opt/miniconda3/bin/activate")
+    assert "conda activate testbed" in swebench.image_test_command(INSTANCE)
+    assert swebench.image_test_command(INSTANCE).endswith("tests/forms_tests/tests.py::FormsTestCase::test_a'")
+    assert "python -m pytest -q'" in swebench.image_test_command({**INSTANCE, "FAIL_TO_PASS": []})
 
 
 def test_the_development_command_uses_the_instances_own_failing_tests():

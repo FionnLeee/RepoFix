@@ -18,6 +18,52 @@ from repopilot.repository_runtime import (
 from repopilot.runtime import Sandbox, TracedAgent
 
 
+@pytest.mark.docker
+def test_an_image_workspace_works_inside_the_images_own_repository(tmp_path, monkeypatch):
+    """SWE-bench 式工作区：仓库在镜像里，候选来自镜像内的 git 差异，判定交给官方 harness。"""
+    monkeypatch.setenv("ARTIFACT_ROOT", str(tmp_path))
+    task = next(t for t in task_definitions() if t["id"] == "checkout")
+    context = tmp_path / "image"
+    context.mkdir()
+    for name, content in task["files"].items():
+        target = context / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(content, encoding="utf-8")
+    (context / "Dockerfile").write_text(
+        "FROM python:3.12-slim\n"
+        "RUN apt-get update && apt-get install -y --no-install-recommends git && rm -rf /var/lib/apt/lists/*\n"
+        "WORKDIR /testbed\nCOPY . /testbed\n"
+        "RUN git init -q && git add -A && git -c user.email=t@example.invalid -c user.name=t commit -qm base\n"
+        "RUN chmod -R 777 /testbed\n", encoding="utf-8")
+    import docker
+
+    client = docker.from_env(timeout=120)
+    image, _ = client.images.build(path=str(context), tag="repopilot-image-workspace-test:latest", rm=True)
+    try:
+        spec = RepositoryTask(source="registered:baseline-v1", commit="a" * 40, allowedPaths=sorted(task["reference"]),
+                              verificationMode="harness", workspaceMode="image",
+                              sandboxImage="repopilot-image-workspace-test:latest", workspacePath="/testbed",
+                              testCommand="python -m unittest discover -v")
+        run = {"id": str(uuid.uuid4()), "generation": 1, "mode": "demo", "baselineId": "checkout",
+               "task": task["task"], "spec": spec.model_dump(), "reviewPolicy": "off"}
+        events = []
+        result = execute_repository_run(run, lambda kind, data, status=None: events.append(kind), threading.Event())
+        assert result["verification"] == {"passed": None, "delegated": "swebench-harness", "output": "",
+                                          "baseline": None, "candidate": None, "patch_replayed": None}
+        assert "REPOSITORY_READY" in events and "CANDIDATE" in events and "VERIFICATION_DELEGATED" in events
+        # The candidate is the repository's own diff, and the patch is repo-root relative.
+        assert set(result["changed_files"]) == {"checkout.py", "money.py"}
+        assert result["patch"].startswith("diff --git a/checkout.py")
+        assert "+    return round(subtotal + (0 if subtotal >= 150 else 10), 2)" in result["patch"]
+        assert result["provenance"]["workspace_mode"] == "image"
+        assert result["provenance"]["workspace_path"] == "/testbed"
+        # An image workspace has no snapshot to bind an approval to: it says so instead of pausing.
+        assert "APPROVAL_POLICY_IGNORED" in events and "APPROVAL_WAIT" not in events
+    finally:
+        client.images.remove(image.id, force=True)
+        client.close()
+
+
 def test_harness_verified_tasks_carry_no_acceptance_tests():
     base = {"source": "registered:test", "commit": "a" * 40, "allowedPaths": ["src/a.py"]}
     assert RepositoryTask.model_validate({**base, "verificationMode": "harness"}).verificationFiles == {}

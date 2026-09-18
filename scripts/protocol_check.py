@@ -257,9 +257,23 @@ response = client.post("/runs", json={"mode": "live", "task": "交给官方 harn
 assert response.status_code == 400, response.text
 checks.append("harness_verified_tasks_reject_local_acceptance_files")
 
+# M5: an image workspace keeps the instance's own image and drops context management, because
+# there is no bounded snapshot to index, remember or bind an approval to.
+image_spec = {"source": "https://github.com/psf/requests", "commit": "a" * 40, "subdir": "",
+              "allowedPaths": ["requests/utils.py"], "verificationMode": "harness", "workspaceMode": "image",
+              "sandboxImage": "swebench/sweb.eval.x86_64.psf_1776_requests-3362:latest",
+              "workspacePath": "/testbed", "instanceId": "psf__requests-3362"}
+created = client.post("/runs", json={"mode": "live", "task": "把候选补丁交给官方 harness 判定。", "spec": image_spec,
+                                     "requestKey": f"protocol-{uuid.uuid4()}"}).raise_for_status().json()
+assert created["spec"]["workspaceMode"] == "image" and created["contextMode"] == "full"
+assert created["spec"]["sandboxImage"].endswith("requests-3362:latest")
+assert created["spec"]["workspacePath"] == "/testbed"
+client.post(f"/runs/{created['id']}/cancel", json={}).raise_for_status()
+checks.append("an_image_workspace_run_keeps_its_image_and_drops_context_management")
+
 report = {
     "checks": checks,
-    "run_ids": [cancelled, owned, expired, abandoned, paused_run, invalidated, reviewable, too_late, single_file],
+    "run_ids": [cancelled, owned, expired, abandoned, paused_run, invalidated, reviewable, too_late, single_file, created["id"]],
     "note": "Synthetic control-plane verification, no model calls.",
 }
 path = root / "runtime" / "validation" / "protocol.json"

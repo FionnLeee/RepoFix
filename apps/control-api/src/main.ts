@@ -69,6 +69,9 @@ class RepositorySpec {
   @IsString({ each: true }) @MaxLength(240, { each: true }) @Matches(pathPattern, { each: true })
   allowedPaths!: string[];
   @IsOptional() @IsString() @MaxLength(120) instanceId?: string;
+  @IsOptional() @IsIn(["snapshot", "image"]) workspaceMode?: string;
+  @IsOptional() @IsString() @MaxLength(200) sandboxImage?: string;
+  @IsOptional() @Matches(/^\/[\w./-]*$/) @MaxLength(200) workspacePath?: string;
   @IsOptional() @IsIn(["tests", "harness"]) verificationMode?: string;
   @IsOptional() @IsObject() verificationFiles?: Record<string, string>;
   @IsOptional() @IsString() @MinLength(1) @MaxLength(1000) testCommand?: string;
@@ -370,8 +373,9 @@ class Api {
     const rawSpec = baseline?.spec || body.spec;
     const spec = rawSpec ? { ...rawSpec, subdir: rawSpec.subdir || "", testCommand: rawSpec.testCommand || "python -m unittest discover -v" } : null;
     const task = baseline?.task || body.task || TASK;
-    const contextMode = body.contextMode || (spec ? "managed" : "full");
-    const memoryEnabled = !!spec && contextMode === "managed" && (body.memoryEnabled ?? !body.baselineId);
+    const imageWorkspace = spec?.workspaceMode === "image";
+    const contextMode = imageWorkspace ? "full" : body.contextMode || (spec ? "managed" : "full");
+    const memoryEnabled = !!spec && !imageWorkspace && contextMode === "managed" && (body.memoryEnabled ?? !body.baselineId);
     const approvalPolicy = body.approvalPolicy || "auto";
     // The reviewer needs a candidate patch to read, so a single-file task keeps review off.
     const reviewPolicy = spec ? body.reviewPolicy || "auto" : "off";

@@ -40,32 +40,36 @@ class OwnershipLost(RuntimeError):
 
 
 class Sandbox:
-    def __init__(self, run_id: str, emit, cancelled: threading.Event, verification: bool = False, files=None, image=None):
+    def __init__(self, run_id: str, emit, cancelled: threading.Event, verification: bool = False, files=None,
+                 image=None, workspace: str = "/workspace", writable: bool = False, memory: str = "256m"):
         self.client = docker.from_env(timeout=45)
         self.emit, self.cancelled, self.index = emit, cancelled, 0
         self.tracing = None
-        self.config = {"network": "none", "memory": "256m", "user": "1000:1000"}
+        self.workspace = workspace
+        self.config = {"network": "none", "memory": memory, "user": "1000:1000", "workspace": workspace,
+                       "read_only_root": not writable}
         self.initial_paths = set(files) if files is not None else {"pricing.py", "test_pricing.py"}
         self.log_folder = Path(os.getenv("ARTIFACT_ROOT", "runtime/artifacts")) / run_id / "tool-logs"
         self.archive_logs = False
+        mounts = {"/tmp": "rw,noexec,nosuid,size=16m,uid=1000,gid=1000"}
+        if not writable:
+            # A snapshot workspace lives on a tmpfs, so it is discarded with the container.
+            mounts[workspace] = "rw,size=16m,uid=1000,gid=1000"
         self.container = self.client.containers.run(
             image or os.environ.get("SANDBOX_IMAGE", "python:3.12-slim"),
             ["sleep", "600"],
             detach=True,
-            working_dir="/workspace",
+            working_dir=workspace,
             user="1000:1000",
             network_mode="none",
-            read_only=True,
-            mem_limit="256m",
+            read_only=not writable,
+            mem_limit=memory,
             nano_cpus=1000000000,
             pids_limit=64,
             cap_drop=["ALL"],
             security_opt=["no-new-privileges:true"],
             environment={"PYTHONDONTWRITEBYTECODE": "1"},
-            tmpfs={
-                "/workspace": "rw,size=16m,uid=1000,gid=1000",
-                "/tmp": "rw,noexec,nosuid,size=16m,uid=1000,gid=1000",
-            },
+            tmpfs=mounts,
             labels={"repopilot.managed": "sandbox", "repopilot.run": run_id, "repopilot.created": str(time.time())},
         )
         try:
@@ -80,10 +84,10 @@ class Sandbox:
         if not set(files).issubset(self.initial_paths):
             raise ValueError("Only explicit fixture files may be initialized")
         from repopilot.repository import safe_path
-        script = "import sys; from pathlib import Path; p=Path('/workspace')/sys.argv[1]; p.parent.mkdir(parents=True,exist_ok=True); p.write_text(sys.argv[2],encoding='utf-8')"
+        script = "import sys; from pathlib import Path; p=Path(sys.argv[3])/sys.argv[1]; p.parent.mkdir(parents=True,exist_ok=True); p.write_text(sys.argv[2],encoding='utf-8')"
         for name, value in files.items():
             safe_path(name)
-            result = self.container.exec_run(["python", "-I", "-c", script, name, value], user="1000:1000")
+            result = self.container.exec_run(["python", "-I", "-c", script, name, value, self.workspace], user="1000:1000")
             if result.exit_code:
                 raise RuntimeError("Cannot initialize sandbox files")
 
@@ -128,7 +132,7 @@ class Sandbox:
         started = time.monotonic()
         wall = time.time()
         result = self.container.exec_run(
-            ["sh", "-c", script, "repopilot-tool", command, output_path], workdir="/workspace", user="1000:1000"
+            ["sh", "-c", script, "repopilot-tool", command, output_path], workdir=self.workspace, user="1000:1000"
         )
         output = {
             "output": result.output.decode(errors="replace"),
@@ -159,7 +163,7 @@ class Sandbox:
         return output
 
     def get_template_vars(self):
-        return {"cwd": "/workspace"}
+        return {"cwd": self.workspace}
 
     def serialize(self):
         return {"info": {"environment": self.config}}

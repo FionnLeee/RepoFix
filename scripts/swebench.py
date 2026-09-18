@@ -154,7 +154,7 @@ def prepare(args):
         else load_instance(args.instance)
     paths = [p.strip() for p in args.allowed_paths.split(",") if p.strip()] or None
     payload = swebench.task_from_instance(instance, allowed_paths=paths, context_mode=args.context_mode,
-                                          review_policy=args.review_policy)
+                                          review_policy=args.review_policy, workspace_mode=args.workspace_mode)
     payload["requestKey"] = f"swebench-{instance['instance_id']}-{uuid.uuid4()}"
     if not args.submit:
         print(json.dumps(payload, ensure_ascii=False, indent=2))
@@ -194,7 +194,8 @@ def main():
     prepare_parser.add_argument("--instance")
     prepare_parser.add_argument("--from-file")
     prepare_parser.add_argument("--allowed-paths", default="")
-    prepare_parser.add_argument("--context-mode", default="managed")
+    prepare_parser.add_argument("--context-mode", default="full")
+    prepare_parser.add_argument("--workspace-mode", default="image", choices=["image", "snapshot"])
     prepare_parser.add_argument("--review-policy", default="auto")
     prepare_parser.add_argument("--submit", action="store_true")
     export_parser = sub.add_parser("export")

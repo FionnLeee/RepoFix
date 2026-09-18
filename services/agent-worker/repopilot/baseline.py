@@ -15,9 +15,16 @@ def _write_script(files):
     return "python -c " + shlex.quote(script)
 
 
-def reference_commands(task_id, spec, files, revise=False):
+def reference_commands(task_id, spec, files, revise=False, workspace_image=False):
+    """The scripted demo actions for a baseline task.
+
+    A snapshot run is checked against the catalog's own file set; an image run copies nothing
+    in — the repository is already in the image — so only the task identity and the allowed
+    paths have to match.
+    """
     task = next((t for t in task_definitions() if t["id"] == task_id), None)
-    if not task or files != task["files"] or spec.allowedPaths != sorted(task["reference"]):
+    if (not task or spec.allowedPaths != sorted(task["reference"])
+            or (not workspace_image and files != task["files"])):
         raise ValueError("Deterministic repository mode requires a matching built-in baseline task")
     commands = ["find . -type f", spec.testCommand, _write_script(task["reference"]), spec.testCommand,
                 "echo COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT"]
