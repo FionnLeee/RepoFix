@@ -62,7 +62,7 @@ type Run = {
   events: Event[];
   result?: {
     patch?: string;
-    verification?: { output?: string; passed?: boolean };
+    verification?: { output?: string; passed?: boolean; delegated?: string };
     model_calls?: number;
     artifact_path?: string;
     error?: string;
@@ -70,6 +70,7 @@ type Run = {
     usage_status?: "complete" | "partial" | "unavailable";
     changed_files?: string[];
     candidate_tree_stored?: boolean;
+    trace_id?: string;
     review?: {
       policy: string;
       rounds: number;
@@ -574,7 +575,10 @@ function Workspace() {
                       <dt>执行环境</dt>
                       <dd>独立容器 · 默认断网</dd>
                       <dt>验证方式</dt>
-                      <dd>干净副本 + 固定测试</dd>
+                      <dd>{run.result?.verification?.delegated ? "交由官方 harness 判定" : "干净副本 + 固定测试"}</dd>
+                      <dt>运行追踪</dt>
+                      <dd>{run.result?.trace_id ? <a href={`http://localhost:16686/trace/${run.result.trace_id}`}
+                        target="_blank" rel="noreferrer">{run.result.trace_id.slice(0, 16)}… ↗</a> : "未开启（未配置 OTLP）"}</dd>
                       <dt>模型调用</dt>
                       <dd>{run.result?.model_calls ?? "完成后汇总"}</dd>
                       <dt>任务</dt><dd>{run.task}</dd>

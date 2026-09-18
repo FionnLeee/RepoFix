@@ -16,7 +16,7 @@ PYTHON = str(ROOT / ".venv" / "Scripts" / "python.exe") if (ROOT / ".venv").is_d
 
 STEPS = [
     {"fault": "Worker 失联：租约过期且没有可用检查点", "expected": "判为中断，不再重排",
-     "script": ["protocol_check.py"], "artifact": "runtime/validation/protocol.json", "minimum": 20, "workers_stopped": True},
+     "script": ["protocol_check.py"], "artifact": "runtime/validation/protocol.json", "minimum": 21, "workers_stopped": True},
     {"fault": "动作写入允许范围之外", "expected": "停在安全边界等待审批；批准后在新代次恢复并只执行一次",
      "script": ["approval_smoke.py"], "artifact": "runtime/validation/m3-approval.json", "minimum": 6},
     {"fault": "Worker 在执行中被顶掉", "expected": "租约过期即重排队、新代次从检查点恢复、旧尝试不写终态、无容器残留",

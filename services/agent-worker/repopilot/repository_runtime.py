@@ -222,10 +222,13 @@ def execute_repository_run(run, emit, cancelled, control=None, quota=None, traci
             model = SafeModel(model_name=f"openai/{os.environ['MODEL_NAME']}", cost_tracking="ignore_errors",
                               model_kwargs={"api_base": os.environ["MODEL_BASE_URL"], "timeout": 45,
                                             "num_retries": 0, "max_tokens": 1600, "temperature": 0.2})
+        # A revision round costs the coder steps as well, so the declared budget covers them
+        # instead of letting the review loop run the attempt into its step limit.
+        step_limit = 20 + (5 * review.max_rounds(run) if review.enabled(run) else 0)
         agent = TracedAgent(model, sandbox, emit=emit, cancelled=cancelled, system_template=system,
                             context_mode=run.get("contextMode", "full"),
                             instance_template="Task: {{task}}",
-                            step_limit=20, cost_limit=0, wall_time_limit_seconds=360,
+                            step_limit=step_limit, cost_limit=0, wall_time_limit_seconds=360,
                             output_path=folder / "trajectory.json")
         agent.tracing = tracing
         if run.get("contextMode") == "managed":
@@ -348,7 +351,7 @@ def execute_repository_run(run, emit, cancelled, control=None, quota=None, traci
         verification = {"passed": passed, "output": verified["output"], "baseline": baseline,
                         "candidate": verified, "patch_replayed": True}
     provenance.update(model=os.getenv("MODEL_NAME") if run["mode"] == "live" else "deterministic",
-                      temperature=0.2, max_output_tokens=context_manager.config.output if context_manager else 1600, step_limit=20,
+                      temperature=0.2, max_output_tokens=context_manager.config.output if context_manager else 1600, step_limit=step_limit,
                       prompt_sha256=hashlib.sha256(system.encode()).hexdigest(),
                       compression_strategy="structured-deterministic-v1" if context_manager else "extractive-v1",
                       context_config=context_manager.config.model_dump() if context_manager else None,

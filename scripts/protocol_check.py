@@ -249,6 +249,14 @@ single_file = create()
 assert client.post(f"/runs/{single_file}/review-request", json={}).status_code == 400
 checks.append("review_is_rejected_for_a_run_without_a_repository_spec")
 
+# M5: a task whose verdict belongs to an external harness must not also carry local acceptance.
+harness_spec = {"source": "registered:baseline-v1", "commit": "a" * 40, "allowedPaths": ["money.py"],
+                "verificationMode": "harness", "verificationFiles": {"test_acceptance.py": "import unittest\n"}}
+response = client.post("/runs", json={"mode": "live", "task": "交给官方 harness 判定的任务", "spec": harness_spec,
+                                      "requestKey": f"protocol-{uuid.uuid4()}"})
+assert response.status_code == 400, response.text
+checks.append("harness_verified_tasks_reject_local_acceptance_files")
+
 report = {
     "checks": checks,
     "run_ids": [cancelled, owned, expired, abandoned, paused_run, invalidated, reviewable, too_late, single_file],

@@ -1,5 +1,6 @@
 from types import SimpleNamespace
 
+import pytest
 from repopilot import review
 
 RUN = {"id": "run-1", "mode": "demo", "task": "修复金额与运费的口径", "reviewPolicy": "auto"}
@@ -91,3 +92,29 @@ def test_feedback_keeps_position_severity_and_suggestion():
     text = review.render_for_coder(findings)
     for expected in ("money.py:2", "blocking", "没有保留两位小数", "total(1, 0.005)", "用 round(..., 2)"):
         assert expected in text
+
+
+def test_the_live_reviewer_makes_one_model_call_and_reports_its_cost(monkeypatch):
+    """The live path cannot run without credits, so its seam is pinned with a fake client."""
+    litellm = pytest.importorskip("litellm")
+    from types import SimpleNamespace
+
+    captured = {}
+    body = "```json\n{\"summary\": \"交给官方测试判定的部分没有问题\", \"findings\": []}\n```"
+    response = SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=body))],
+                               usage=SimpleNamespace(model_dump=lambda: {"prompt_tokens": 11, "completion_tokens": 7}))
+
+    def completion(**kwargs):
+        captured.update(kwargs)
+        return response
+
+    monkeypatch.setattr(litellm, "completion", completion)
+    monkeypatch.setattr(litellm, "completion_cost", lambda *_, **__: 0.02)
+    reviewer = review.ModelReviewer("model-x", "https://relay.invalid", "secret", max_tokens=333)
+    answer = reviewer.complete([{"role": "user", "content": "候选补丁"}])
+    assert answer["content"] == body and answer["cost"] == 0.02
+    assert answer["usage"] == {"prompt_tokens": 11, "completion_tokens": 7}
+    assert answer["reviewer"] == "model-x"
+    assert captured["model"] == "openai/model-x" and captured["max_tokens"] == 333
+    assert captured["api_base"] == "https://relay.invalid" and captured["temperature"] == 0.0
+    assert review.parse(answer["content"], CANDIDATE)["parse_error"] is None
