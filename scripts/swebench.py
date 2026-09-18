@@ -8,7 +8,8 @@ PASS_TO_PASS，RepoPilot 只负责产出补丁；两者的结论不可互换，�
   export     把已完成的实例运行写成官方 predictions.jsonl
   import     把官方报告汇总进本地记录
 
-真实评测需要官方镜像与模型额度，命令写在 docs/evidence/M5-swebench.md，本机未运行。
+官方 harness 已在本机对两个已筛选实例完成真实模型补丁评测；新增 live 运行仍需要有效模型凭据。
+完整的本地记录与命令见 docs/evidence/M5-swebench.md。
 """
 
 import argparse
