@@ -21,10 +21,18 @@ def changed_files(patch):
     return sorted({name for _, name in DIFF_HEADER.findall(patch or "")})
 
 
+def failing_tests(instance):
+    """FAIL_TO_PASS as a list: the dataset ships lists, older exports ship JSON strings."""
+    value = instance.get("FAIL_TO_PASS") or []
+    if isinstance(value, str):
+        value = json.loads(value)
+    return [str(test) for test in value]
+
+
 def default_test_command(instance):
     """A development command for the coder: the instance's own failing tests, when known."""
-    tests = json.loads(instance.get("FAIL_TO_PASS") or "[]")
-    files = sorted({str(test).split("::")[0] for test in tests if str(test).split("::")[0].endswith(".py")})
+    tests = failing_tests(instance)
+    files = sorted({test.split("::")[0] for test in tests if test.split("::")[0].endswith(".py")})
     return "python -m pytest -q " + " ".join(files[:5]) if files else "python -m pytest -q"
 
 

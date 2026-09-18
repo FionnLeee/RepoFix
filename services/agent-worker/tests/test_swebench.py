@@ -42,6 +42,11 @@ def test_the_changed_files_of_an_instance_patch_bound_the_task():
 def test_the_development_command_uses_the_instances_own_failing_tests():
     assert swebench.default_test_command(INSTANCE) == "python -m pytest -q tests/forms_tests/tests.py"
     assert swebench.default_test_command({**INSTANCE, "FAIL_TO_PASS": "[]"}) == "python -m pytest -q"
+    # The dataset ships FAIL_TO_PASS as a list; older exports ship it as a JSON string.
+    listed = {**INSTANCE, "FAIL_TO_PASS": ["tests/test_requests.py::TestRequests::test_x"]}
+    assert swebench.default_test_command(listed) == "python -m pytest -q tests/test_requests.py"
+    assert swebench.failing_tests(listed) == ["tests/test_requests.py::TestRequests::test_x"]
+    assert swebench.failing_tests({**INSTANCE, "FAIL_TO_PASS": "[]"}) == []
 
 
 def test_predictions_are_written_for_instance_runs_and_everything_else_is_reported():
