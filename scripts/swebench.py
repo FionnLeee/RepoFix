@@ -170,7 +170,7 @@ def export(args):
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text("".join(json.dumps(row, ensure_ascii=False) + "\n" for row in rows), encoding="utf-8")
     manifest = {"predictions": len(rows), "skipped": skipped, "model_name_or_path": args.model,
-                "file": str(target.relative_to(ROOT))}
+                "file": str(target.resolve().relative_to(ROOT))}
     (VALIDATION / "swebench-predictions.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2),
                                                           encoding="utf-8")
     return manifest

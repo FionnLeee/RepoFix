@@ -181,7 +181,15 @@ def image_candidate(sandbox, workspace):
 
     staged = git("add", "-A", "--", ".")
     if staged.exit_code:
-        raise RuntimeError("Cannot stage the repository inside the image workspace")
+        output = staged.output.decode(errors="replace")
+        if "index.lock" in output:
+            # A step whose command the sandbox killed can leave the lock behind; the workspace is
+            # a disposable container, so clearing it and staging again is safe.
+            sandbox.container.exec_run(["rm", "-f", ".git/index.lock"], workdir=workspace, user="1000:1000")
+            staged = git("add", "-A", "--", ".")
+            output = staged.output.decode(errors="replace")
+        if staged.exit_code:
+            raise RuntimeError(f"Cannot stage the repository inside the image workspace: {output[-300:]}")
     patch = git("diff", "--cached", "--no-ext-diff", "--no-textconv", "HEAD").output.decode(errors="replace")
     names = git("diff", "--cached", "--name-only", "HEAD").output.decode(errors="replace").split()
     candidate = {}
