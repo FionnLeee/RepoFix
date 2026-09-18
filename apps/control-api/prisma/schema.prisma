@@ -18,6 +18,8 @@ model Run {
   memoryEnabled Boolean @default(false)
   compactRequested Int @default(0)
   approvalPolicy String @default("auto")
+  reviewPolicy String @default("auto")
+  reviewRounds Int?
   recoveryAttempts Int @default(0)
   status String @default("QUEUED")
   workerId String?

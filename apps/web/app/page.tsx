@@ -6,6 +6,7 @@ import {
   useQuery,
   useQueryClient,
 } from "@tanstack/react-query";
+import { CandidateDiff, type Finding } from "./candidate-diff";
 import {
   ArrowUpRight,
   Check,
@@ -53,6 +54,7 @@ type Run = {
   projectId?: string;
   memoryEnabled?: boolean;
   approvalPolicy?: string;
+  reviewPolicy?: string;
   recoveryAttempts?: number;
   spec?: { source: string; commit: string; subdir: string };
   approvals?: Approval[];
@@ -67,6 +69,22 @@ type Run = {
     usage?: { input_tokens: number; output_tokens: number };
     usage_status?: "complete" | "partial" | "unavailable";
     changed_files?: string[];
+    candidate_tree_stored?: boolean;
+    review?: {
+      policy: string;
+      rounds: number;
+      max_rounds: number;
+      unresolved_blocking: number;
+      reviews: {
+        round: number;
+        status: string;
+        summary?: string;
+        findings?: Finding[];
+        invalid?: { reason: string }[];
+        candidate_sha256?: string;
+        error?: string;
+      }[];
+    };
     provenance?: { commit: string; source_sha256: string; image_id: string; context_mode: string };
   };
 };
@@ -99,6 +117,13 @@ const labels: Record<string, string> = {
   RECOVERED: "从检查点恢复执行",
   QUOTA_WAIT: "等待模型并发配额",
   QUOTA_FALLBACK: "Redis 不可用，未共享配额",
+  REVIEW_ENABLED: "已开启代码评审",
+  REVIEW_REQUESTED: "请求独立评审",
+  REVIEW_COMPLETED: "评审已返回",
+  REVIEW_INVALIDATED: "原评审已过期",
+  REVIEW_UNRESOLVED: "修订后仍有阻断项",
+  REVIEW_FAILED: "评审未能完成",
+  REVISION_REQUESTED: "要求有限修订",
 };
 async function api<T>(path: string, body?: unknown): Promise<T> {
   const res = await fetch(
@@ -134,6 +159,8 @@ function Workspace() {
     [taskText, setTaskText] = useState(""),
     [paths, setPaths] = useState(""),
     [approvalPolicy, setApprovalPolicy] = useState("auto"),
+    [reviewPolicy, setReviewPolicy] = useState("auto"),
+    [reviewRounds, setReviewRounds] = useState(2),
     [testCommand, setTestCommand] = useState("python -m unittest discover -v"),
     [verification, setVerification] = useState("import unittest\n\nclass Acceptance(unittest.TestCase):\n    def test_behavior(self):\n        # 替换为实际业务断言\n        self.fail('请填写独立验收测试')\n"),
     [busy, setBusy] = useState(false);
@@ -179,6 +206,7 @@ function Workspace() {
         mode,
         requestKey: crypto.randomUUID(),
         approvalPolicy,
+        ...(taskKind === "legacy" ? {} : { reviewPolicy, reviewRounds }),
         ...(taskKind === "legacy" ? {} : taskKind === "custom" ? {
           task: taskText, contextMode, memoryEnabled,
           spec: { source, commit, subdir, allowedPaths: paths.split(",").map(p => p.trim()).filter(Boolean),
@@ -216,6 +244,13 @@ function Workspace() {
   const active =
     run && ["QUEUED", "RUNNING", "VERIFYING", "WAITING_APPROVAL"].includes(run.status);
   const pending = run?.approvals?.find((a) => a.status === "PENDING");
+  // A review is evidence for the candidate version it read, so one that a revision replaced is
+  // shown as expired rather than as a current opinion.
+  const reviewHistory = run?.result?.review?.reviews ?? [];
+  const staleReviews = new Set(
+    events.filter((e) => e.type === "REVIEW_INVALIDATED").map((e) => String(e.data.reviewed_sha256)),
+  );
+  const currentFindings = (reviewHistory.at(-1)?.findings ?? []) as Finding[];
   return (
     <div className="shell">
       <aside className="rail">
@@ -331,6 +366,13 @@ function Workspace() {
               <option value="auto">自动：越界写入需批准</option>
               <option value="strict">严格：所有文件写入都需批准</option>
             </select></label>
+            {taskKind !== "legacy" && <label>代码评审<select value={reviewPolicy} onChange={e => setReviewPolicy(e.target.value)}>
+              <option value="auto">开启：交付前独立评审一次</option>
+              <option value="off">关闭：只由独立测试判定</option>
+            </select></label>}
+            {taskKind !== "legacy" && reviewPolicy === "auto" && <label>修订上限<select value={reviewRounds} onChange={e => setReviewRounds(Number(e.target.value))}>
+              {[0, 1, 2, 3].map(n => <option key={n} value={n}>{n} 轮</option>)}
+            </select></label>}
             {taskKind !== "custom" && taskKind !== "legacy" && <p className="form-wide">
               {baselines.data?.find(t => t.id === taskKind)?.task}<br />
               <small>固定 commit：{baselines.data?.find(t => t.id === taskKind)?.spec.commit || "正在加载任务集"}</small>
@@ -582,6 +624,27 @@ function Workspace() {
                   </h3>
                   {run.result?.patch ? (
                     <>
+                      <div className="review-summary">
+                        <span className={`badge ${reviewPolicy === "off" ? "" : "on"}`}>
+                          评审{run.result.review?.policy === "off" ? "关闭" : "开启"}
+                        </span>
+                        <span>已完成 {run.result.review?.rounds ?? 0} 轮有限修订</span>
+                        {(run.result.review?.unresolved_blocking ?? 0) > 0 && <span className="severity severity-blocking">
+                          修订上限后仍有 {run.result.review?.unresolved_blocking} 条阻断项，交由独立验收判定
+                        </span>}
+                      </div>
+                      {reviewHistory.length > 0 && <ul className="review-history">
+                        {reviewHistory.map((record) => <li key={record.round}>
+                          <span>第 {record.round} 轮评审</span>
+                          <span className="muted">{record.status === "failed" ? `未能完成：${record.error}` : record.summary}</span>
+                          <span>{record.findings?.length ?? 0} 条意见{record.invalid?.length ? `，丢弃 ${record.invalid.length} 条无效位置` : ""}</span>
+                          {record.candidate_sha256 && staleReviews.has(record.candidate_sha256)
+                            && <span className="stale">已过期：候选版本此后被修订，位置仅对当时的版本有效</span>}
+                          {record.findings?.map((finding, index) => (
+                            <span key={index} className="muted">{finding.file}:{finding.line}</span>
+                          ))}
+                        </li>)}
+                      </ul>}
                       <button
                         className="download"
                         onClick={() => {
@@ -599,22 +662,7 @@ function Workspace() {
                       >
                         下载 patch ↓
                       </button>
-                      <pre className="diff">
-                        {run.result.patch.split("\n").map((line, i) => (
-                          <div
-                            key={i}
-                            className={
-                              line.startsWith("+")
-                                ? "added"
-                                : line.startsWith("-")
-                                  ? "removed"
-                                  : ""
-                            }
-                          >
-                            {line || " "}
-                          </div>
-                        ))}
-                      </pre>
+                      <CandidateDiff runId={run.id} findings={currentFindings} patch={run.result.patch} />
                     </>
                   ) : (
                     <p className="empty-inline">

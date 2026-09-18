@@ -222,9 +222,36 @@ assert client.post(f"/runs/{invalidated}/approvals/{pending['id']}/decide",
                    json={"decision": "approve"}).status_code == 409
 checks.append("cancel_invalidates_a_pending_approval")
 
+# M4: the platform's own review entry, separate from the coder asking for one at delivery.
+def create_repository(payload=None):
+    response = client.post("/runs", json={"mode": "demo", "baselineId": "checkout",
+                                          "requestKey": f"protocol-{uuid.uuid4()}", **(payload or {})})
+    response.raise_for_status()
+    return response.json()
+
+
+assert client.post("/runs", json={"mode": "demo", "baselineId": "checkout", "reviewPolicy": "sometimes",
+                                  "requestKey": f"protocol-{uuid.uuid4()}"}).status_code == 400
+reviewable = create_repository({"reviewPolicy": "off"})
+assert reviewable["reviewPolicy"] == "off"
+assert client.post(f"/runs/{reviewable['id']}/review-request", json={}).raise_for_status().json()["reviewPolicy"] == "auto"
+detail = client.get(f"/runs/{reviewable['id']}").json()
+assert any(e["type"] == "REVIEW_ENABLED" for e in detail["events"])
+assert client.post(f"/runs/{reviewable['id']}/review-request", json={}).raise_for_status().json()["reviewPolicy"] == "auto"
+checks.append("review_can_be_turned_on_while_the_run_is_queued")
+# An attempt reads its configuration when it is claimed, so asking later cannot change it.
+too_late = create_repository({"reviewPolicy": "off"})
+client.post(f"/internal/runs/{too_late['id']}/claim", json={"workerId": "protocol-test"},
+            headers=headers).raise_for_status()
+assert client.post(f"/runs/{too_late['id']}/review-request", json={}).status_code == 409
+checks.append("review_request_is_rejected_once_an_attempt_has_claimed_the_run")
+single_file = create()
+assert client.post(f"/runs/{single_file}/review-request", json={}).status_code == 400
+checks.append("review_is_rejected_for_a_run_without_a_repository_spec")
+
 report = {
     "checks": checks,
-    "run_ids": [cancelled, owned, expired, abandoned, paused_run, invalidated],
+    "run_ids": [cancelled, owned, expired, abandoned, paused_run, invalidated, reviewable, too_late, single_file],
     "note": "Synthetic control-plane verification, no model calls.",
 }
 path = root / "runtime" / "validation" / "protocol.json"

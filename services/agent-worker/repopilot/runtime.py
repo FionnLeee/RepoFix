@@ -43,6 +43,7 @@ class Sandbox:
     def __init__(self, run_id: str, emit, cancelled: threading.Event, verification: bool = False, files=None, image=None):
         self.client = docker.from_env(timeout=45)
         self.emit, self.cancelled, self.index = emit, cancelled, 0
+        self.tracing = None
         self.config = {"network": "none", "memory": "256m", "user": "1000:1000"}
         self.initial_paths = set(files) if files is not None else {"pricing.py", "test_pricing.py"}
         self.log_folder = Path(os.getenv("ARTIFACT_ROOT", "runtime/artifacts")) / run_id / "tool-logs"
@@ -125,6 +126,7 @@ class Sandbox:
         output_path = f"/tmp/tool-{uuid.uuid4().hex}"
         script = 'ulimit -f 4096; timeout -k 2 25 sh -c "$1" > "$2" 2>&1; code=$?; head -c 16000 "$2"; exit "$code"'
         started = time.monotonic()
+        wall = time.time()
         result = self.container.exec_run(
             ["sh", "-c", script, "repopilot-tool", command, output_path], workdir="/workspace", user="1000:1000"
         )
@@ -149,6 +151,9 @@ class Sandbox:
         self.emit(
             "TOOL_RESULT", {"command": command, **output, "duration_ms": round((time.monotonic() - started) * 1000)}
         )
+        if self.tracing:
+            self.tracing.completed("tool.execute", wall, time.time(), command=command[:200],
+                                   returncode=output["returncode"])
         if self.cancelled.is_set():
             raise Cancelled("任务已取消")
         return output
@@ -202,6 +207,8 @@ class TracedAgent(DefaultAgent):
         self.pending_action = None
         self.resume_action = None
         self.pending_approval = None
+        self.review_rounds = 0
+        self.tracing = None
         self.quota = None
         self._quota_fallback = False
         super().__init__(*args, **kwargs)
@@ -236,6 +243,7 @@ class TracedAgent(DefaultAgent):
         self.compactions, self.extra_template_vars = state.compactions, state.template_vars
         self.n_calls, self.cost = state.model_calls, state.cost
         self.n_consecutive_format_errors = state.consecutive_format_errors
+        self.review_rounds = state.review_rounds
         self.env.index = state.tool_calls
         self._start_time = time.time() - state.active_seconds
         if self.context_manager:
@@ -306,6 +314,22 @@ class TracedAgent(DefaultAgent):
             self.execute_actions(self.messages[-1])
         except Submitted as error:
             self.add_messages(*error.messages)
+
+    def revise(self, task, message):
+        """Continue the same attempt with one extra observation, without resetting history."""
+        self.add_messages(self.model.format_message(role="user", content=message))
+        self._restored = True
+        return self.run(task)
+
+    def record_review(self, review):
+        """A review is a model call of this run: it shares the coder's budget and history."""
+        self.n_calls += 1
+        self.cost += float(review.get("cost") or 0.)
+        self.full_messages.append({
+            "role": "assistant", "content": review.get("content", ""),
+            "extra": {"cost": review.get("cost") or 0., "review_round": review.get("round"),
+                      "reviewer": review.get("reviewer"), "review_invalid": review.get("invalid", []),
+                      "response": {"usage": review["usage"]} if review.get("usage") else None}})
 
     def save(self, path, *extra_dicts):
         data = super().save(path, *extra_dicts)
@@ -396,6 +420,15 @@ class TracedAgent(DefaultAgent):
         self.compactions.append(event)
         self.emit("CONTEXT_COMPACTED", event)
 
+    def step(self):
+        """One model call, timed as a span so a slow run can be read step by step."""
+        wall = time.time()
+        try:
+            return super().step()
+        finally:
+            if self.tracing:
+                self.tracing.completed("model.call", wall, time.time(), call=self.n_calls)
+
     def query(self):
         if self.cancelled.is_set():
             raise Cancelled("任务已取消")
@@ -454,10 +487,19 @@ class TracedAgent(DefaultAgent):
         return waited
 
 
-def execute_run(run: dict, emit, cancelled: threading.Event, control=None, quota=None) -> dict:
+def execute_run(run: dict, emit, cancelled: threading.Event, control=None, quota=None, tracing=None) -> dict:
+    """One attempt, inside its own trace span, whichever execution path it takes."""
+    from repopilot.tracing import span
+
+    with span(tracing, "attempt", run_id=run["id"], generation=run.get("generation"),
+              mode=run.get("mode"), baseline=run.get("baselineId")):
+        return _execute(run, emit, cancelled, control, quota, tracing)
+
+
+def _execute(run: dict, emit, cancelled: threading.Event, control=None, quota=None, tracing=None) -> dict:
     if run.get("spec"):
         from repopilot.repository_runtime import execute_repository_run
-        return execute_repository_run(run, emit, cancelled, control, quota)
+        return execute_repository_run(run, emit, cancelled, control, quota, tracing)
     folder = Path(os.getenv("ARTIFACT_ROOT", "runtime/artifacts")) / run["id"]
     folder.mkdir(parents=True, exist_ok=True)
     source = {"pricing.py": SOURCE, "test_pricing.py": DEVELOPMENT_TESTS}

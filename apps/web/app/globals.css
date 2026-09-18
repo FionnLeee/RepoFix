@@ -569,6 +569,133 @@ dd {
   font-size: 11px;
   margin-bottom: 15px;
 }
+.review-summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  font-size: 11px;
+  color: var(--muted);
+  margin-bottom: 10px;
+}
+.review-summary .badge {
+  border: 1px solid #d7dfec;
+  border-radius: 999px;
+  padding: 1px 9px;
+  color: var(--muted);
+}
+.review-summary .badge.on {
+  border-color: #bcd6f5;
+  background: #eef5fe;
+  color: #2f6db8;
+}
+.review-history {
+  list-style: none;
+  padding: 0;
+  margin: 0 0 14px;
+  border-left: 2px solid #e2e7ef;
+}
+.review-history li {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  font-size: 11px;
+  padding: 3px 0 3px 10px;
+}
+.review-history .stale {
+  color: #a5524b;
+}
+.candidate-diff .diff-files {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+.candidate-diff .diff-files button {
+  border: 1px solid #d7dfec;
+  border-radius: 8px;
+  background: #fff;
+  font-size: 11px;
+  padding: 3px 9px;
+}
+.candidate-diff .diff-files button.active {
+  border-color: #8fb8e8;
+  background: #eef5fe;
+}
+.finding-count {
+  margin-left: 6px;
+  border-radius: 999px;
+  background: #f6ded9;
+  color: #a5524b;
+  padding: 0 6px;
+}
+.findings {
+  list-style: none;
+  padding: 0;
+  margin: 14px 0 0;
+}
+.finding {
+  border: 1px solid #e2e7ef;
+  border-left-width: 3px;
+  border-radius: 8px;
+  padding: 10px 12px;
+  margin-bottom: 8px;
+  font-size: 12px;
+}
+.finding.severity-blocking {
+  border-left-color: #c0554b;
+}
+.finding.severity-major {
+  border-left-color: #c98a24;
+}
+.finding.severity-minor {
+  border-left-color: #7d93b3;
+}
+.finding p {
+  margin: 4px 0 0;
+}
+.finding .muted,
+.review-history .muted {
+  color: var(--muted);
+}
+.finding-jump {
+  border: 0;
+  background: none;
+  padding: 0;
+  color: var(--blue);
+  font-size: 11px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.severity {
+  display: inline-block;
+  border-radius: 999px;
+  padding: 0 8px;
+  font-size: 10px;
+  margin-left: 8px;
+}
+.severity-blocking {
+  background: #f6ded9;
+  color: #a5524b;
+}
+.severity-major {
+  background: #fbf0d9;
+  color: #96631a;
+}
+.severity-minor {
+  background: #e8eef7;
+  color: #4a6484;
+}
+.finding-line {
+  background: rgba(192, 85, 75, 0.08);
+}
+.finding-glyph {
+  background: #c0554b;
+  border-radius: 50%;
+  margin-left: 6px;
+  width: 8px !important;
+  height: 8px !important;
+  margin-top: 6px;
+}
 .empty {
   border: 1px dashed #d4ddec;
   border-radius: 10px;

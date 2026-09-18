@@ -9,11 +9,24 @@ def task_definitions():
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def reference_commands(task_id, spec, files):
+def _write_script(files):
+    script = "import json; from pathlib import Path; data=json.loads(" + repr(json.dumps(files)) + "); "
+    script += "[(Path(k).write_text(v,encoding='utf-8')) for k,v in data.items()]"
+    return "python -c " + shlex.quote(script)
+
+
+def reference_commands(task_id, spec, files, revise=False):
     task = next((t for t in task_definitions() if t["id"] == task_id), None)
     if not task or files != task["files"] or spec.allowedPaths != sorted(task["reference"]):
         raise ValueError("Deterministic repository mode requires a matching built-in baseline task")
-    script = "import json; from pathlib import Path; data=json.loads(" + repr(json.dumps(task["reference"])) + "); "
-    script += "[(Path(k).write_text(v,encoding='utf-8')) for k,v in data.items()]"
-    return ["find . -type f", spec.testCommand, "python -c " + shlex.quote(script), spec.testCommand,
-            "echo COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT"]
+    commands = ["find . -type f", spec.testCommand, _write_script(task["reference"]), spec.testCommand,
+                "echo COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT"]
+    if not revise:
+        return commands
+    # The revision round the reviewer asks for: the same patch, re-applied with an explicit
+    # revision marker, so the candidate really changes and the old review becomes stale.
+    revised = dict(task["reference"])
+    first = sorted(revised)[0]
+    revised[first] = "# 评审修订：按评审意见重新核对后提交。\n" + revised[first]
+    return commands + ["find . -type f", spec.testCommand, _write_script(revised), spec.testCommand,
+                       "echo COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT"]

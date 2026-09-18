@@ -9,10 +9,10 @@ from pathlib import Path
 
 from minisweagent.models.test_models import DeterministicModel, make_output
 
-from repopilot import recovery
+from repopilot import recovery, review
 from repopilot.reporting import usage_summary
 from repopilot.repository import RepositoryTask, digest, load_snapshot, validate_files
-from repopilot.runtime import SYSTEM, SafeModel, Sandbox, TracedAgent
+from repopilot.runtime import SYSTEM, ApprovalPaused, Cancelled, SafeModel, Sandbox, TracedAgent
 
 # Runs in the container with isolated Python, and refuses links at every traversed directory.
 READ_TREE = """
@@ -160,7 +160,7 @@ def replay_patch(original, patch, folder):
         return validate_files(files)
 
 
-def execute_repository_run(run, emit, cancelled, control=None, quota=None):
+def execute_repository_run(run, emit, cancelled, control=None, quota=None, tracing=None):
     started = time.monotonic()
     spec = RepositoryTask.model_validate(run["spec"])
     source = load_snapshot(spec)
@@ -182,6 +182,7 @@ def execute_repository_run(run, emit, cancelled, control=None, quota=None):
         # The interrupted attempt's own trajectory stays as evidence next to the resumed one.
         recovery.preserve_trajectory(folder, restored.binding["generation"])
     sandbox = Sandbox(run["id"], emit, cancelled, files=files)
+    sandbox.tracing = tracing
     image_id = sandbox.container.image.id
     provenance = {
         "source": spec.source, "commit": spec.commit, "subdir": spec.subdir,
@@ -190,6 +191,7 @@ def execute_repository_run(run, emit, cancelled, control=None, quota=None):
         "task_sha256": hashlib.sha256(run["task"].encode()).hexdigest(),
         "context_mode": run.get("contextMode", "full"), "runner_version": "repository-v1",
         "approval_policy": run.get("approvalPolicy", "auto"),
+        "review_policy": review.policy(run),
         "recovered_from": {"generation": restored.binding["generation"], "checkpoint_id": restored.id,
                            "sequence": restored.sequence, "phase": restored.phase,
                            "approval_id": decision["approval_id"] if decision else None} if restored else None,
@@ -211,7 +213,7 @@ def execute_repository_run(run, emit, cancelled, control=None, quota=None):
         if run["mode"] == "demo":
             # A demo reference is only loaded from the trusted baseline catalog, never from an API request.
             from repopilot.baseline import reference_commands
-            commands = reference_commands(run.get("baselineId"), spec, source)
+            commands = reference_commands(run.get("baselineId"), spec, source, revise=review.enabled(run))
             model = DeterministicModel(outputs=[make_output("预设基线动作", [{"command": cmd}], cost=0)
                                                 for cmd in commands], cost_per_call=0)
         else:
@@ -225,6 +227,7 @@ def execute_repository_run(run, emit, cancelled, control=None, quota=None):
                             instance_template="Task: {{task}}",
                             step_limit=20, cost_limit=0, wall_time_limit_seconds=360,
                             output_path=folder / "trajectory.json")
+        agent.tracing = tracing
         if run.get("contextMode") == "managed":
             from repopilot.context import ContextManager
             context_manager = ContextManager(run, source, emit, folder)
@@ -238,29 +241,112 @@ def execute_repository_run(run, emit, cancelled, control=None, quota=None):
         agent.enable_quota(quota)
         if restored:
             agent.restore_checkpoint(plan["checkpoint"], allow_previous_generation=True, resume_action=decision)
-        outcome = agent.run(run["task"] + "\nDevelopment test command: " + spec.testCommand)
+        instruction = run["task"] + "\nDevelopment test command: " + spec.testCommand
+        outcome = agent.run(instruction)
         if outcome.get("exit_status") != "Submitted":
             raise RuntimeError(f"Agent stopped: {outcome.get('exit_status')}")
-        candidate = read_tree(sandbox)
-        changed = sorted(name for name in source.keys() | candidate.keys() if source.get(name) != candidate.get(name))
-        if not set(changed).issubset(spec.allowedPaths):
-            raise ValueError("Candidate changed paths outside allowedPaths")
-        patch, replayed = make_patch_and_reapply(source, candidate, folder)
-        if len(patch.encode()) > 500000:
-            raise ValueError("Patch exceeds event size limit")
-        (folder / "candidate.patch").write_text(patch, encoding="utf-8")
+        reviews, reviewed_sha, unresolved = [], None, 0
+        # One independent, read-only review per candidate, with a bounded number of revisions
+        # before the acceptance run decides. A review that cannot be produced is reported and
+        # never turns into a silent pass.
+        while True:
+            candidate = read_tree(sandbox)
+            changed = sorted(name for name in source.keys() | candidate.keys() if source.get(name) != candidate.get(name))
+            if not set(changed).issubset(spec.allowedPaths):
+                raise ValueError("Candidate changed paths outside allowedPaths")
+            patch, replayed = make_patch_and_reapply(source, candidate, folder)
+            if len(patch.encode()) > 500000:
+                raise ValueError("Patch exceeds event size limit")
+            (folder / "candidate.patch").write_text(patch, encoding="utf-8")
+            candidate_sha = digest(candidate)
+            if reviewed_sha is not None and reviewed_sha != candidate_sha:
+                emit("REVIEW_INVALIDATED", {"reviewed_sha256": reviewed_sha, "candidate_sha256": candidate_sha,
+                                            "reason": "修订后的候选版本已变化，原评审不再对应当前版本。"})
+            if not review.enabled(run) or agent.review_rounds > review.max_rounds(run) or reviewed_sha == candidate_sha:
+                break
+            reviewed_sha = candidate_sha
+            emit("REVIEW_REQUESTED", {"round": agent.review_rounds + 1, "reviewer": "read-only",
+                                      "candidate_sha256": candidate_sha, "changed_files": changed,
+                                      "policy": review.policy(run)})
+            wall = time.time()
+            try:
+                evidence = sandbox.execute({"command": spec.testCommand})["output"]
+                verdict = review.perform(review.reviewer_for(run, source, candidate, changed, agent.review_rounds),
+                                         run, spec, candidate, changed, patch, evidence, agent.review_rounds)
+            except (Cancelled, ApprovalPaused):
+                raise
+            except Exception as error:
+                if tracing:
+                    tracing.completed("review", wall, time.time(), round=agent.review_rounds + 1,
+                                      error=str(error)[:200])
+                emit("REVIEW_FAILED", {"round": agent.review_rounds + 1, "candidate_sha256": candidate_sha,
+                                       "error": str(error)[:300]})
+                reviews.append({"round": agent.review_rounds + 1, "status": "failed", "candidate_sha256": candidate_sha,
+                                "error": str(error)[:300]})
+                break
+            if tracing:
+                tracing.completed("review", wall, time.time(), round=agent.review_rounds + 1,
+                                  findings=len(verdict["findings"]), invalid=verdict["invalid_count"])
+            agent.record_review(verdict)
+            review_record = {"round": verdict["round"] + 1, "status": "ok", "candidate_sha256": candidate_sha,
+                             "reviewer": verdict["reviewer"], "summary": verdict["summary"],
+                             "findings": verdict["findings"], "invalid": verdict["invalid"],
+                             "parse_error": verdict["parse_error"], "cost_usd": verdict["cost"]}
+            reviews.append(review_record)
+            emit("REVIEW_COMPLETED", {"round": review_record["round"], "candidate_sha256": candidate_sha,
+                                      "reviewer": verdict["reviewer"], "summary": verdict["summary"],
+                                      "findings": verdict["findings"], "invalid": verdict["invalid"],
+                                      "invalid_count": verdict["invalid_count"], "parse_error": verdict["parse_error"]})
+            blocking = review.blocking(verdict["findings"])
+            unresolved = len(blocking)
+            if not blocking:
+                break
+            if agent.review_rounds >= review.max_rounds(run):
+                emit("REVIEW_UNRESOLVED", {"round": review_record["round"], "findings": blocking,
+                                           "reason": f"已完成 {review.max_rounds(run)} 轮有限修订，评审仍有阻断项，交由独立验收判定。"})
+                break
+            agent.review_rounds += 1
+            emit("REVISION_REQUESTED", {"round": agent.review_rounds, "review_round": review_record["round"],
+                                        "findings": blocking})
+            outcome = agent.revise(instruction, review.render_for_coder(blocking))
+            if outcome.get("exit_status") != "Submitted":
+                raise RuntimeError(f"Agent stopped during revision: {outcome.get('exit_status')}")
         emit("CANDIDATE", {"patch": patch, "changed_files": changed}, "VERIFYING")
+        # The candidate tree is kept next to the source snapshot so the workbench can render a
+        # real base/candidate diff. An oversized tree is reported instead of being dropped.
+        candidate_tree = json.dumps(candidate, ensure_ascii=False)
+        tree_stored = len(candidate_tree.encode()) <= 2_000_000
+        if tree_stored:
+            (folder / "candidate.json").write_text(candidate_tree, encoding="utf-8")
     finally:
         if context_manager:
             context_manager.close()
         sandbox.close()
-    baseline = verify(source, spec, run["id"], cancelled, image_id)
-    verified = verify(replayed, spec, run["id"], cancelled, image_id)
-    before, after = baseline["report"], verified["report"]
-    passed = bool(patch and before and after and before["tests"] > 0
-                  and before["failures"] > 0 and before["errors"] == 0 and before["skipped"] == 0
-                  and baseline["returncode"] != 0 and verified["returncode"] == 0
-                  and before["ids"] == after["ids"] and after["successful"] and after["skipped"] == 0)
+    if spec.verificationMode == "harness":
+        # The official harness applies the instance's own test patch in its own image and judges
+        # the result; this run proves only that the candidate patch replays onto the pinned commit.
+        emit("VERIFICATION_DELEGATED", {"harness": "swebench", "patch_replayed": True,
+                                        "reason": "官方 harness 用实例自带的测试补丁判定；本运行只保证候选补丁能干净地重放到固定提交。"})
+        passed, verification = None, {"passed": None, "delegated": "swebench-harness", "output": "",
+                                      "baseline": None, "candidate": None, "patch_replayed": True}
+    else:
+        wall = time.time()
+        baseline = verify(source, spec, run["id"], cancelled, image_id)
+        if tracing:
+            tracing.completed("acceptance.baseline", wall, time.time(), tests=baseline["report"].get("tests"),
+                              returncode=baseline["returncode"])
+        wall = time.time()
+        verified = verify(replayed, spec, run["id"], cancelled, image_id)
+        if tracing:
+            tracing.completed("acceptance.candidate", wall, time.time(), tests=verified["report"].get("tests"),
+                              returncode=verified["returncode"])
+        before, after = baseline["report"], verified["report"]
+        passed = bool(patch and before and after and before["tests"] > 0
+                      and before["failures"] > 0 and before["errors"] == 0 and before["skipped"] == 0
+                      and baseline["returncode"] != 0 and verified["returncode"] == 0
+                      and before["ids"] == after["ids"] and after["successful"] and after["skipped"] == 0)
+        verification = {"passed": passed, "output": verified["output"], "baseline": baseline,
+                        "candidate": verified, "patch_replayed": True}
     provenance.update(model=os.getenv("MODEL_NAME") if run["mode"] == "live" else "deterministic",
                       temperature=0.2, max_output_tokens=context_manager.config.output if context_manager else 1600, step_limit=20,
                       prompt_sha256=hashlib.sha256(system.encode()).hexdigest(),
@@ -270,8 +356,13 @@ def execute_repository_run(run, emit, cancelled, control=None, quota=None):
     (folder / "manifest.json").write_text(json.dumps({"spec": spec.model_dump(), "task": run["task"],
                                                       "provenance": provenance}), encoding="utf-8")
     result = {"patch": patch, "changed_files": changed, "provenance": provenance,
-              "verification": {"passed": passed, "output": verified["output"], "baseline": baseline,
-                               "candidate": verified, "patch_replayed": True},
+              "verification": verification,
+              "review": {"policy": review.policy(run), "rounds": agent.review_rounds,
+                         "max_rounds": review.max_rounds(run), "unresolved_blocking": unresolved,
+                         "reviews": reviews},
+              "candidate_tree_stored": tree_stored,
+              "trace_id": tracing.trace_id() if tracing else None,
+              "trace_parent_span_id": tracing.parent_span_id() if tracing else None,
               **usage_summary(agent.full_messages, agent.n_calls, run["mode"]), "mode": run["mode"],
               "context_compactions": agent.compactions,
               "duration_seconds": round(time.monotonic() - started, 2), "cost_usd": None,

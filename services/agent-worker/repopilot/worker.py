@@ -10,6 +10,7 @@ import docker
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
+from repopilot import tracing as tracing_module
 from repopilot.quota import ModelQuota
 from repopilot.reaper import reap
 from repopilot.reporting import failure_result
@@ -23,6 +24,7 @@ class Message(BaseModel):
     schema_version: int = Field(ge=1, le=1)
     message_id: str
     run_id: uuid.UUID
+    traceparent: str | None = None
 
 
 def control_request(client: httpx.Client, run_id: str, kind: str, payload: dict) -> dict:
@@ -111,16 +113,19 @@ async def handle(message: aio_pika.IncomingMessage, quota: ModelQuota | None):
                             return
 
             pulse = asyncio.create_task(heartbeat())
+            tracing = tracing_module.Tracing(str(payload.run_id), payload.traceparent)
             try:
-                result = await asyncio.to_thread(execute_run, run, emit, cancelled, control, quota)
+                result = await asyncio.to_thread(execute_run, run, emit, cancelled, control, quota, tracing)
                 if result.get("paused"):
                     # The pause is already persisted (checkpoint + approval request); keep the
                     # control plane's WAITING_APPROVAL status instead of writing a terminal one.
                     logging.info("Run %s paused for approval %s", run["id"], result["paused"].get("approval_id"))
                     return
-                status = (
-                    "CANCELLED" if cancelled.is_set() else "SUCCEEDED" if result["verification"]["passed"] else "FAILED"
-                )
+                verification = result["verification"]
+                # A harness-verified run succeeds by producing a patch that replays cleanly; the
+                # official harness decides whether that patch resolves the instance.
+                accepted = bool(verification.get("passed") or verification.get("delegated"))
+                status = "CANCELLED" if cancelled.is_set() else "SUCCEEDED" if accepted else "FAILED"
                 await asyncio.to_thread(emit, status, result, status)
                 logging.info("Run %s completed: %s", run["id"], status)
             except ApprovalPaused as error:
@@ -139,6 +144,8 @@ async def handle(message: aio_pika.IncomingMessage, quota: ModelQuota | None):
             finally:
                 done.set()
                 await pulse
+                # Flush this attempt's spans; tracing never writes state the run depends on.
+                await asyncio.to_thread(tracing.close)
                 sync.close()
 
 

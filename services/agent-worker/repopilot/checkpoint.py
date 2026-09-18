@@ -51,6 +51,7 @@ class AgentState(BaseModel):
     consecutive_format_errors: int = Field(ge=0)
     model_cursor: int | None = Field(default=None, ge=-1)
     context_state: dict = Field(default_factory=dict)
+    review_rounds: int = Field(default=0, ge=0)
 
 
 class Checkpoint(BaseModel):
@@ -149,6 +150,7 @@ class CheckpointStore:
             consecutive_format_errors=agent.n_consecutive_format_errors,
             model_cursor=agent.model.current_index if isinstance(agent.model, DeterministicModel) else None,
             context_state=agent.context_manager.state if agent.context_manager else {},
+            review_rounds=agent.review_rounds,
         )
         checkpoint = Checkpoint(
             schema_version=1, id=uuid.uuid4().hex, binding=self.binding, phase=phase,

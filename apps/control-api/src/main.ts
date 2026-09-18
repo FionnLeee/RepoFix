@@ -1,4 +1,7 @@
 import "reflect-metadata";
+import { randomBytes } from "node:crypto";
+import * as fs from "node:fs";
+import * as path from "node:path";
 import {
   Body,
   BadRequestException,
@@ -55,6 +58,8 @@ const terminal = ["SUCCEEDED", "FAILED", "CANCELLED", "INTERRUPTED"];
 const MAX_RECOVERY_ATTEMPTS = 3;
 const resumablePhases = ["ready", "awaiting_approval"];
 const pathPattern = /^(?!\/)(?!.*(?:^|\/)\.\.(?:\/|$))(?!.*(?:^|\/)\.(?:\/|$))(?!.*(?:^|\/)\.git(?:\/|$))[a-zA-Z0-9_.-]+(?:\/[a-zA-Z0-9_.-]+)*$/;
+/** W3C trace context for one delivery: the worker continues the trace this control plane starts. */
+const traceparent = () => `00-${randomBytes(16).toString("hex")}-${randomBytes(8).toString("hex")}-01`;
 class RepositorySpec {
   @Matches(/^(registered:[a-zA-Z0-9_-]{1,60}|https:\/\/github\.com\/[a-zA-Z0-9_-]+\/[a-zA-Z0-9_.-]+)$/)
   @MaxLength(200) source!: string;
@@ -63,7 +68,9 @@ class RepositorySpec {
   @IsArray() @ArrayMinSize(1) @ArrayMaxSize(30) @ArrayUnique()
   @IsString({ each: true }) @MaxLength(240, { each: true }) @Matches(pathPattern, { each: true })
   allowedPaths!: string[];
-  @IsObject() verificationFiles!: Record<string, string>;
+  @IsOptional() @IsString() @MaxLength(120) instanceId?: string;
+  @IsOptional() @IsIn(["tests", "harness"]) verificationMode?: string;
+  @IsOptional() @IsObject() verificationFiles?: Record<string, string>;
   @IsOptional() @IsString() @MinLength(1) @MaxLength(1000) testCommand?: string;
 }
 function catalog(): any[] {
@@ -84,6 +91,8 @@ class CreateRun {
   @IsOptional() @IsIn(["full", "compact", "managed"]) contextMode?: string;
   @IsOptional() @IsBoolean() memoryEnabled?: boolean;
   @IsOptional() @IsIn(["auto", "strict"]) approvalPolicy?: string;
+  @IsOptional() @IsIn(["auto", "off"]) reviewPolicy?: string;
+  @IsOptional() @IsInt() @Min(0) @Max(5) reviewRounds?: number;
 }
 class Claim {
   @IsString() @MinLength(1) @MaxLength(100) workerId!: string;
@@ -195,6 +204,7 @@ class Store extends PrismaClient implements OnModuleInit, OnModuleDestroy {
                   schema_version: 1,
                   message_id: String(item.id),
                   run_id: item.runId,
+                  traceparent: traceparent(),
                 }),
               ),
               { persistent: true },
@@ -303,7 +313,7 @@ class Api {
     return {
       status: "ok",
       upstream: "mini-swe-agent 2.4.6",
-      milestone: "M3",
+      milestone: "M4",
       liveEnabled: process.env.LIVE_ENABLED === "true",
     };
   }
@@ -363,14 +373,21 @@ class Api {
     const contextMode = body.contextMode || (spec ? "managed" : "full");
     const memoryEnabled = !!spec && contextMode === "managed" && (body.memoryEnabled ?? !body.baselineId);
     const approvalPolicy = body.approvalPolicy || "auto";
+    // The reviewer needs a candidate patch to read, so a single-file task keeps review off.
+    const reviewPolicy = spec ? body.reviewPolicy || "auto" : "off";
+    // The bounded revision count is the reviewer's budget, not the coder's; NULL means default.
+    const reviewRounds = spec ? body.reviewRounds ?? null : null;
     const projectId = spec ? projectKey(spec.source, spec.subdir) : null;
     if (spec) {
       if (!baseline && !body.task) throw new BadRequestException("指定仓库需要任务说明");
       if (body.mode === "demo" && !baseline) throw new BadRequestException("自定义仓库仅支持真实模型；预设演示仅用于内置基线");
       if ((spec.subdir && !pathPattern.test(spec.subdir)) || spec.allowedPaths.some((p: string) => p.toLowerCase().split("/").includes(".git") || p.startsWith("_repopilot_verify/")))
         throw new BadRequestException("仓库路径无效");
-      const entries = Object.entries(spec.verificationFiles);
-      if (!entries.length || entries.length > 20 || !entries.some(([p]) => /^test_[a-zA-Z0-9_]+\.py$/.test(p)) ||
+      const entries = Object.entries(spec.verificationFiles || {});
+      if (spec.verificationMode === "harness") {
+        // The official harness applies the instance's own test patch, so this run carries none.
+        if (entries.length) throw new BadRequestException("交由官方 harness 验收的任务不应携带验收测试");
+      } else if (!entries.length || entries.length > 20 || !entries.some(([p]) => /^test_[a-zA-Z0-9_]+\.py$/.test(p)) ||
           entries.some(([p, v]) => !pathPattern.test(p) || p.toLowerCase().split("/").includes(".git") || typeof v !== "string" || Buffer.byteLength(v) > 100000 || v.includes("\0")))
         throw new BadRequestException("验收文件必须包含 test_*.py，使用相对路径且单文件不超过 100 KB");
     } else if (body.task || contextMode !== "full") {
@@ -379,7 +396,8 @@ class Api {
     const matches = (run: any) => run.mode === body.mode && run.task === task &&
       canonical(run.spec) === canonical(spec) && run.baselineId === (body.baselineId || null) &&
       run.contextMode === contextMode && run.memoryEnabled === memoryEnabled &&
-      run.approvalPolicy === approvalPolicy;
+      run.approvalPolicy === approvalPolicy && run.reviewPolicy === reviewPolicy &&
+      (run.reviewRounds ?? null) === reviewRounds;
     const existing = await this.db.run.findUnique({
       where: { requestKey: body.requestKey },
     });
@@ -395,7 +413,7 @@ class Api {
         const run = await tx.run.create({
           data: { requestKey: body.requestKey, mode: body.mode, task,
             ...(spec ? { spec: spec as Prisma.InputJsonValue } : {}), baselineId: body.baselineId,
-            contextMode, projectId, memoryEnabled, approvalPolicy },
+            contextMode, projectId, memoryEnabled, approvalPolicy, reviewPolicy, reviewRounds },
         });
         await tx.event.create({
           data: {
@@ -615,6 +633,68 @@ class Api {
         },
       });
     });
+  }
+  /** The platform's own review entry: turn the review on for a run that was created without it. */
+  @Post("runs/:id/review-request") async reviewRequest(@Param("id") id: string) {
+    return this.db.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM "Run" WHERE id = ${id} FOR UPDATE`;
+      const run = await tx.run.findUnique({ where: { id } });
+      if (!run) throw new NotFoundException();
+      if (terminal.includes(run.status)) throw new ConflictException("任务已经结束，评审请求无法再影响它");
+      if (!run.spec) throw new BadRequestException("只有仓库任务可以被评审");
+      if (run.reviewPolicy === "auto") return run;
+      // A claimed attempt already read its configuration, so the request has to arrive in time.
+      if (run.status !== "QUEUED") throw new ConflictException("任务已被认领，评审请求对本次尝试无效");
+      await tx.event.create({
+        data: {
+          runId: id,
+          key: `review-enabled-${run.generation}`,
+          type: "REVIEW_ENABLED",
+          data: { reason: "用户在任务开始前要求对本次交付做独立评审。" },
+        },
+      });
+      return tx.run.update({ where: { id }, data: { reviewPolicy: "auto" } });
+    });
+  }
+  /** Base and candidate text of the changed files, for the read-only workbench diff. */
+  @Get("runs/:id/candidate") async candidateView(@Param("id") id: string) {
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(id))
+      throw new BadRequestException("运行标识无效");
+    if (!(await this.db.run.findUnique({ where: { id } }))) throw new NotFoundException();
+    const folder = path.join(process.env.ARTIFACT_ROOT || "runtime/artifacts", id);
+    const readTree = (name: string) => {
+      try {
+        const parsed = JSON.parse(fs.readFileSync(path.join(folder, name), "utf8"));
+        return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+          ? (parsed as Record<string, string>)
+          : null;
+      } catch {
+        return null;
+      }
+    };
+    const source = readTree("source.json");
+    const candidate = readTree("candidate.json");
+    if (!source || !candidate) throw new NotFoundException("该任务没有可对比的候选快照");
+    const changed = Object.keys(source)
+      .filter((name) => source[name] !== candidate[name])
+      .sort();
+    const base: Record<string, string> = {};
+    const head: Record<string, string> = {};
+    let omitted = 0;
+    let characters = 0;
+    for (const name of changed) {
+      const before = source[name] ?? "";
+      const after = candidate[name] ?? "";
+      // The diff view is a reading aid, so oversized inputs are reported rather than truncated.
+      if (!pathPattern.test(name) || before.length + after.length + characters > 800000) {
+        omitted += 1;
+        continue;
+      }
+      base[name] = before;
+      head[name] = after;
+      characters += before.length + after.length;
+    }
+    return { changed_files: changed, omitted_files: omitted, base, candidate: head };
   }
   @Get("runs/:id/stream") async stream(
     @Param("id") id: string,

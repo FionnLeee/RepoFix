@@ -46,8 +46,10 @@ services:
       LIVE_ENABLED: ${LIVE_ENABLED:-false}
       BASELINE_CATALOG: /baseline/catalog.json
       QDRANT_URL: http://qdrant:6333
+      ARTIFACT_ROOT: /artifacts
     volumes:
       - ./runtime/baseline-catalog.json:/baseline/catalog.json:ro
+      - ./runtime/artifacts:/artifacts:ro
     ports: ["127.0.0.1:3101:3101"]
     depends_on:
       postgres: { condition: service_healthy }
@@ -92,6 +94,8 @@ services:
       QDRANT_URL: http://qdrant:6333
       REDIS_URL: redis://redis:6379/0
       MODEL_MAX_CONCURRENCY: ${MODEL_MAX_CONCURRENCY:-2}
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4318
+      OTEL_SERVICE_NAME: repopilot-worker
       EMBEDDING_MODEL_DIR: /embedding-model
       CONTEXT_WINDOW_TOKENS: ${CONTEXT_WINDOW_TOKENS:-16384}
       CONTEXT_OUTPUT_TOKENS: ${CONTEXT_OUTPUT_TOKENS:-1600}
@@ -104,6 +108,13 @@ services:
     depends_on:
       api: { condition: service_healthy }
       redis: { condition: service_healthy }
+  # Trace collector for the worker's OTLP span export; the worker does not depend on it, so a
+  # missing collector degrades observability without failing runs.
+  jaeger:
+    image: jaegertracing/all-in-one:1.62.0
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+    ports: ["127.0.0.1:16686:16686"]
 volumes:
   pgdata:
   rabbitdata:
