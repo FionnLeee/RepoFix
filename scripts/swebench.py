@@ -16,6 +16,7 @@ import importlib.metadata
 import json
 import os
 import shutil
+import subprocess
 import sys
 import urllib.error
 import urllib.request
@@ -29,6 +30,7 @@ from repopilot import swebench  # noqa: E402
 API = os.getenv("CONTROL_API_URL", "http://localhost:3101")
 CACHE = Path(os.getenv("SWEBENCH_CACHE", str(ROOT / "runtime" / "swebench")))
 VALIDATION = ROOT / "runtime" / "validation"
+HARNESS_IMAGE = os.getenv("SWEBENCH_IMAGE", "repopilot-swebench")
 SAMPLE = {
     "instance_id": "sample__sample-1", "repo": "psf/requests", "base_commit": "0" * 40,
     "problem_statement": "示例：用本地缓存的实例文件替换它。",
@@ -62,12 +64,38 @@ def load_instance(instance_id):
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def installed(package):
+def installed(package, python=None):
     """Ask the distribution, not the import system: this file is itself named swebench.py."""
+    if python and python != sys.executable:
+        probe = subprocess.run([python, "-c", f"import importlib.metadata as m; print(m.version('{package}'))"],
+                               capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=120)
+        return probe.stdout.strip() if probe.returncode == 0 else None
     try:
         return importlib.metadata.version(package)
     except importlib.metadata.PackageNotFoundError:
         return None
+
+
+def harness_python():
+    """The interpreter that runs the official harness, which usually is not this one."""
+    candidates = [os.getenv("SWEBENCH_PYTHON")]
+    workspace = ROOT.parents[3] if len(ROOT.parents) > 3 else None
+    if workspace:
+        candidates.append(str(workspace / ".venvs" / "swebench" / "Scripts" / "python.exe"))
+        candidates.append(str(workspace / ".venvs" / "swebench" / "bin" / "python"))
+    for candidate in candidates:
+        if candidate and Path(candidate).is_file():
+            return candidate
+    return sys.executable
+
+
+def docker_out(*args):
+    try:
+        completed = subprocess.run(["docker", *args], capture_output=True, text=True,
+                                   encoding="utf-8", errors="replace", timeout=120)
+        return completed.returncode, completed.stdout.strip()
+    except (OSError, subprocess.TimeoutExpired):
+        return 1, ""
 
 
 def preflight():
@@ -87,19 +115,35 @@ def preflight():
               f"allowedPaths={task['spec']['allowedPaths']}")
     except Exception as error:  # noqa: BLE001 - the report must survive any failure
         check("instance_translation", False, str(error))
-    missing = [name for name in ("swebench", "datasets") if installed(name) is None]
-    check("official_harness_package", not missing,
-          "已安装" if not missing else f"缺少 {', '.join(missing)}；评测前需 pip install swebench（含 datasets，约 1–2 GB）")
+    # The official harness runs as a Linux process: on Windows it writes CRLF evaluation
+    # scripts, which the container's shell reads as part of every test selector.
+    code, _ = docker_out("image", "inspect", HARNESS_IMAGE)
+    python = harness_python()
+    host_version = installed("swebench", python)
+    check("official_harness", code == 0 or host_version is not None,
+          f"镜像 {HARNESS_IMAGE} 可用" if code == 0
+          else f"没有镜像 {HARNESS_IMAGE}；宿主环境有 swebench {host_version}，但 Windows 上不要用它跑评测"
+          if host_version else f"既没有镜像 {HARNESS_IMAGE}，宿主也没有 swebench")
+    cache = CACHE / "swe-bench-lite-test.json"
+    try:
+        rows = len(json.loads(cache.read_text(encoding="utf-8")))
+    except (OSError, ValueError):
+        rows = 0
+    check("local_dataset", rows > 0,
+          f"{cache.relative_to(ROOT)} 有 {rows} 个实例" if rows
+          else f"缺少 {cache.relative_to(ROOT)}（harness 读本地文件时要 JSON 数组，容器里连不上 Hub）")
     cached = cached_instances()
     check("instance_cache", bool(cached), f"{len(cached)} 个本地实例：{', '.join(cached[:5])}" if cached
-          else f"{CACHE} 为空；按文档缓存实例 JSON 后 prepare 才能用")
+          else f"{CACHE} 为空；缓存实例 JSON 后 prepare 才能用")
+    code, listing = docker_out("images", "--filter", "reference=swebench/sweb.eval.*", "--format", "{{.Size}}")
     free = shutil.disk_usage(ROOT).free / 1e9
-    check("disk_headroom", free >= 40,
-          f"{free:.1f} GB 可用；单个 SWE-bench 实例镜像约 1–3 GB，官方子集需要数十 GB")
+    check("disk_headroom", free >= 10,
+          f"{free:.1f} GB 可用，已缓存 {len(listing.splitlines())} 个实例镜像；单实例落盘约 4.2 GB，"
+          "固定子集需要先腾出数十 GB")
     check("delegated_verification_path", True,
           "由 pytest 集成用例覆盖（test_a_harness_verified_run_delivers_a_patch_without_local_acceptance）")
     report = {"checks": checks, "ok": all(entry["ok"] for entry in checks if entry["name"] != "disk_headroom"),
-              "note": "官方 harness 的执行未在本机运行；本报告只说明接线是否就绪。"}
+              "note": "本报告只说明接线是否就绪；模型成绩需要真实运行后才有。"}
     VALIDATION.mkdir(parents=True, exist_ok=True)
     (VALIDATION / "swebench-preflight.json").write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     return report

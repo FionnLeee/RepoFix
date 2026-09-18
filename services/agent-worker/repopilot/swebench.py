@@ -86,7 +86,22 @@ def export_predictions(runs, model_name):
 
 
 def summarise_report(report):
-    """Counters from an official report, plus the ids behind them."""
+    """Counters from an official report, plus the ids behind them.
+
+    The harness writes two shapes: a summary per run (``total_instances``/``resolved_ids``) and,
+    in older versions, one entry per instance with a ``resolved`` flag. Both are accepted so a
+    report can be imported whichever version produced it.
+    """
+    if "resolved_ids" in report or "total_instances" in report:
+        resolved = list(report.get("resolved_ids") or [])
+        unresolved = list(report.get("unresolved_ids") or [])
+        return {"instances": report.get("total_instances", len(resolved) + len(unresolved)),
+                "resolved": len(resolved),
+                "patch_applied": report.get("completed_instances"),
+                "resolved_ids": sorted(resolved), "unresolved_ids": sorted(unresolved),
+                "empty_patch_ids": sorted(report.get("empty_patch_ids") or []),
+                "error_ids": sorted(report.get("error_ids") or []),
+                "failure_reasons": report.get("failure_reasons") or {}, "harness": HARNESS}
     resolved = sorted(key for key, entry in report.items() if (entry or {}).get("resolved"))
     applied = sorted(key for key, entry in report.items() if (entry or {}).get("patch_successfully_applied"))
     return {"instances": len(report), "resolved": len(resolved), "patch_applied": len(applied),

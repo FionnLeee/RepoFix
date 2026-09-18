@@ -65,3 +65,17 @@ def test_the_harness_report_is_summarised_with_the_ids_behind_each_number():
     assert summary["instances"] == 3 and summary["resolved"] == 1 and summary["patch_applied"] == 2
     assert summary["resolved_ids"] == ["django__django-11099"]
     assert summary["unresolved_ids"] == ["django__django-11133", "django__django-11433"]
+
+
+def test_the_summary_shape_the_current_harness_writes_is_understood_too():
+    """swebench 5.x writes one summary per run; the ids are lists, not per-instance entries."""
+    report = {"total_instances": 2, "completed_instances": 1, "resolved_instances": 1,
+              "unresolved_instances": 0, "empty_patch_instances": 1, "error_instances": 0,
+              "resolved_ids": ["django__django-11099"], "unresolved_ids": [],
+              "empty_patch_ids": ["astropy__astropy-12907"], "error_ids": [],
+              "failure_reasons": {}, "schema_version": 2}
+    summary = swebench.summarise_report(report)
+    assert summary["instances"] == 2 and summary["resolved"] == 1
+    assert summary["resolved_ids"] == ["django__django-11099"]
+    assert summary["empty_patch_ids"] == ["astropy__astropy-12907"]
+    assert summary["error_ids"] == []
