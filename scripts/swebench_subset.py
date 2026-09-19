@@ -69,7 +69,9 @@ def ensure_images(instances):
         if code == 0:
             continue
         print(f"[pull] {image}", flush=True)
-        code, _ = cli.docker_out("pull", "-q", image)
+        code, output = cli.docker_out("pull", "-q", image)
+        if code:
+            print(f"[pull failed] {instance_id}: {output[-200:]}", flush=True)
         (pulled if code == 0 else failed).append(instance_id)
     return pulled, failed
 
@@ -82,6 +84,18 @@ def gold_predictions(instances, target):
                                  "model_patch": row["patch"]}, ensure_ascii=False))
     target.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return target
+
+
+INFRA_MARKERS = ("Connection error", "InternalServerError", "ServiceUnavailable", "Timeout",
+                 "APIConnectionError", "RateLimitError", "502", "503", "504")
+
+
+def infrastructure_failure(run):
+    """A provider outage is not an agent outcome: it must be retried or reported, never scored."""
+    if run.get("status") != "FAILED":
+        return None
+    error = str((run.get("result") or {}).get("error") or "")
+    return error if any(marker in error for marker in INFRA_MARKERS) else None
 
 
 def wait_for_runs(run_ids, limit=3600):
@@ -121,26 +135,47 @@ def main():
         print(json.dumps(report, ensure_ascii=False)[:400])
         return 0
 
-    run_ids = {}
-    for instance_id in screenable:
+    def submit(instance_id):
         payload = swebench.task_from_instance(
             json.loads((CACHE / f"{instance_id}.json").read_text(encoding="utf-8")))
         if args.max_rounds is not None:
             payload["reviewRounds"] = args.max_rounds
-        payload["requestKey"] = f"subset-{instance_id}-{int(time.time())}"
-        run_ids[instance_id] = cli.api("/runs", payload)["id"]
-    report["runs"] = run_ids
+        payload["requestKey"] = f"subset-{instance_id}-{int(time.time() * 1000)}"
+        return cli.api("/runs", payload)["id"]
+
+    run_ids = {instance_id: submit(instance_id) for instance_id in screenable}
+    report["runs"] = dict(run_ids)
     states = wait_for_runs(list(run_ids.values()))
+    # A provider outage is not an agent outcome. Retry once, then report it separately instead
+    # of scoring it as an attempt that produced nothing.
+    infra = {}
+    for instance_id, run_id in list(run_ids.items()):
+        detail = cli.api(f"/runs/{run_id}")
+        reason = infrastructure_failure(detail)
+        if reason:
+            print(f"[retry] {instance_id}: {reason[:80]}", flush=True)
+            run_ids[instance_id] = submit(instance_id)
+            report.setdefault("retried", {})[instance_id] = reason[:200]
+    if report.get("retried"):
+        states = wait_for_runs(list(run_ids.values()))
+        for instance_id, run_id in run_ids.items():
+            reason = infrastructure_failure(cli.api(f"/runs/{run_id}"))
+            if reason:
+                infra[instance_id] = reason[:200]
+    report["infra_failed"] = infra
+    judged = [instance_id for instance_id in screenable if instance_id not in infra]
+    report["judged"] = judged
+    states = {run_id: cli.api(f"/runs/{run_id}")["status"] for run_id in run_ids.values()}
 
     predictions = VALIDATION / "swebench-subset-predictions.jsonl"
     rows, skipped = swebench.export_predictions(cli.api("/runs"), "repopilot")
-    rows = [row for row in rows if row["instance_id"] in screenable]
+    rows = [row for row in rows if row["instance_id"] in judged]
     predictions.write_text("".join(json.dumps(row, ensure_ascii=False) + "\n" for row in rows), encoding="utf-8")
     report["predictions"] = {"file": str(predictions.relative_to(ROOT)), "rows": len(rows),
                              "empty_submissions": [row["instance_id"] for row in rows if not row["model_patch"]],
-                             "skipped": [entry for entry in skipped if entry["instance_id"] in screenable]}
-    verdict = harness(screenable, predictions, "repopilot-subset")
-    report["verdict"] = {key: verdict.get(key) for key in
+                             "skipped": [entry for entry in skipped if entry["instance_id"] in judged]}
+    verdict = {} if not judged else harness(judged, predictions, "repopilot-subset")
+    report["verdict"] = {"note": "判定的分母里不含 gold 过不了的实例与基础设施失败的实例"} if not verdict else {key: verdict.get(key) for key in
                          ("total_instances", "resolved_instances", "unresolved_instances",
                           "empty_patch_instances", "error_instances",
                           "resolved_ids", "unresolved_ids", "empty_patch_ids", "failure_reasons")}
