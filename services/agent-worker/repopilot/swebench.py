@@ -97,22 +97,30 @@ def prediction(run, model_name):
 
 
 def export_predictions(runs, model_name):
-    """Predictions for the runs that are instance runs; everything else is reported, not dropped."""
+    """One prediction per instance run, including the runs that produced nothing.
+
+    An attempt that crashed, ran out of steps or never submitted has no patch: SWE-bench counts
+    that as an empty submission, not as a missing entry, so the denominator stays honest and the
+    harness decides. Runs that are not instance runs at all are simply not part of the sample.
+    """
     rows, skipped = [], []
     for run in runs:
         instance = (run.get("spec") or {}).get("instanceId")
         if not instance:
-            continue  # not a SWE-bench run at all; not a skip worth reporting
+            continue
         patch = (run.get("result") or {}).get("patch") or ""
-        if run.get("status") != "SUCCEEDED":
-            skipped.append({"run_id": run["id"], "instance_id": instance, "reason": f"status {run.get('status')}"})
-        elif not patch:
-            skipped.append({"run_id": run["id"], "instance_id": instance, "reason": "no patch was produced"})
-        else:
-            rows.append(prediction(run, model_name))
+        if not patch:
+            reason = ("no patch was produced" if run.get("status") == "SUCCEEDED"
+                      else f"status {run.get('status')}")
+            skipped.append({"run_id": run["id"], "instance_id": instance, "reason": reason})
+        rows.append(prediction(run, model_name))
     seen = {}
     for row in rows:
-        seen[row["instance_id"]] = row  # the harness expects one prediction per instance
+        # One prediction per instance: the newest attempt that produced a patch wins, and an
+        # empty submission is only used when no attempt produced anything.
+        current = seen.get(row["instance_id"])
+        if current is None or (not current["model_patch"] and row["model_patch"]):
+            seen[row["instance_id"]] = row
     return list(seen.values()), skipped
 
 

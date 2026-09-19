@@ -68,14 +68,23 @@ def test_the_development_command_uses_the_instances_own_failing_tests():
     assert swebench.failing_tests({**INSTANCE, "FAIL_TO_PASS": "[]"}) == []
 
 
-def test_predictions_are_written_for_instance_runs_and_everything_else_is_reported():
-    runs = [run("1"), run("2", status="FAILED"), run("3", patch=""),
+def test_predictions_cover_every_instance_run_even_without_a_patch():
+    # /runs answers newest first, so run "1" is the newest attempt for this instance.
+    runs = [run("1"), run("2", status="FAILED", patch=""), run("3", patch=""),
             run("4", instance=None), run("5", patch="diff --git a/y.py b/y.py\n")]
     rows, skipped = swebench.export_predictions(runs, "repopilot")
-    assert rows == [{"instance_id": "django__django-11099", "model_name_or_path": "repopilot",
-                     "model_patch": "diff --git a/y.py b/y.py\n"}]  # one row per instance, last wins
+    # An attempt with nothing to show is an empty submission the harness judges, not a hole in
+    # the sample; a run that is not an instance run is not part of the sample at all.
+    assert [row["instance_id"] for row in rows] == ["django__django-11099"]
+    assert rows[0]["model_patch"] == "diff --git a/x.py b/x.py\n"  # newest attempt that produced one
     assert {entry["run_id"]: entry["reason"] for entry in skipped} == {
         "2": "status FAILED", "3": "no patch was produced"}
+    # A later run with a patch is not picked over an earlier one that already has a patch, and an
+    # empty submission is only used when no attempt produced anything.
+    older = [run("1"), run("5", patch="diff --git a/y.py b/y.py\n")]
+    assert swebench.export_predictions(older, "repopilot")[0][0]["model_patch"].startswith("diff --git a/x.py")
+    empty_rows, empty_skipped = swebench.export_predictions([run("6", status="FAILED", patch="")], "repopilot")
+    assert empty_rows[0]["model_patch"] == "" and empty_skipped[0]["reason"] == "status FAILED"
     assert json.dumps(rows)  # the predictions file is a plain jsonl payload
 
 
