@@ -305,9 +305,87 @@ assert candidate["changed_files"] == ["new.py", "old.py"]
 assert candidate["base"]["new.py"] == "" and candidate["candidate"]["old.py"] == ""
 checks.append("candidate_diff_includes_added_and_deleted_files")
 
+# Delivery: the host executor registers what it saw on the target, the person approves exactly that,
+# and only the registering executor can apply. The control plane never touches the target itself.
+delivered = create_repository({"reviewPolicy": "off"})
+delivery_run = delivered["id"]
+subdir = delivered["spec"]["subdir"]
+claim = client.post(f"/internal/runs/{delivery_run}/claim", json={"workerId": "protocol-delivery"},
+                    headers=headers).raise_for_status().json()
+delivery_patch = ("diff --git a/money.py b/money.py\nindex 1111111..2222222 100644\n--- a/money.py\n+++ b/money.py\n"
+                  "@@ -1 +1 @@\n-old\n+new\n"
+                  "diff --git a/extra.py b/extra.py\nnew file mode 100644\nindex 0000000..3333333\n--- /dev/null\n"
+                  "+++ b/extra.py\n@@ -0,0 +1 @@\n+x\n")
+patch_sha = hashlib.sha256(delivery_patch.encode()).hexdigest()
+executor_token = "e" * 64
+delivery_files = [{"path": f"{subdir}/extra.py", "change": "added", "before": None, "after": "3" * 40},
+                  {"path": f"{subdir}/money.py", "change": "modified", "before": "1" * 40, "after": "2" * 40}]
+survey_body = {"id": str(uuid.uuid4()), "targetPath": "/home/me/checkout", "targetHead": delivered["spec"]["commit"],
+               "baseCommit": delivered["spec"]["commit"], "patchSha256": patch_sha, "targetFingerprint": "f" * 64,
+               "executorSha256": hashlib.sha256(executor_token.encode()).hexdigest(), "files": delivery_files}
+assert client.post(f"/runs/{delivery_run}/deliveries", json=survey_body).status_code == 409  # still RUNNING
+unresolved_body = {**survey_body, "baseCommit": "a" * 40, "targetHead": "a" * 40,
+                   "patchSha256": hashlib.sha256(patch.encode()).hexdigest()}
+assert client.post(f"/runs/{evaluation_id}/deliveries", json=unresolved_body).status_code == 409  # unresolved harness
+client.post(f"/internal/runs/{delivery_run}/step", headers=headers, json={
+    "workerId": "protocol-delivery", "generation": claim["generation"], "key": "synthetic-done",
+    "type": "SUCCEEDED", "status": "SUCCEEDED", "data": {"patch": delivery_patch, "changed_files": ["money.py", "extra.py"],
+    "verification": {"passed": True, "output": "ok"}}}).raise_for_status()
+checks.append("delivery_requires_a_finished_and_accepted_candidate")
+assert client.post(f"/runs/{delivery_run}/deliveries",
+                   json={**survey_body, "files": [{**delivery_files[1], "path": "money.py"}, delivery_files[0]]}).status_code == 409
+assert client.post(f"/runs/{delivery_run}/deliveries",
+                   json={**survey_body, "files": [{**delivery_files[0], "before": "9" * 40}, delivery_files[1]]}).status_code == 400
+assert client.post(f"/runs/{delivery_run}/deliveries", json={**survey_body, "patchSha256": "0" * 64}).status_code == 409
+assert client.post(f"/runs/{delivery_run}/deliveries", json={**survey_body, "baseCommit": "0" * 40}).status_code == 409
+checks.append("delivery_file_list_patch_and_base_must_match_the_run")
+delivery = client.post(f"/runs/{delivery_run}/deliveries", json=survey_body).raise_for_status().json()
+assert delivery["status"] == "PENDING" and "executorSha256" not in delivery
+assert client.post(f"/runs/{delivery_run}/deliveries", json=survey_body).raise_for_status().json()["id"] == delivery["id"]
+assert client.post(f"/runs/{delivery_run}/deliveries", json={**survey_body, "targetFingerprint": "a" * 64}).status_code == 409
+checks.append("delivery_registration_is_idempotent_per_id")
+decision = {"decision": "approve", "patchSha256": patch_sha, "targetFingerprint": "f" * 64}
+assert client.post(f"/runs/{delivery_run}/deliveries/{delivery['id']}/decide",
+                   json={**decision, "targetFingerprint": "a" * 64}).status_code == 409
+assert client.post(f"/deliveries/{delivery['id']}/claim", json={"executorToken": executor_token}).status_code == 409
+approved = client.post(f"/runs/{delivery_run}/deliveries/{delivery['id']}/decide", json=decision).raise_for_status().json()
+assert approved["status"] == "APPROVED" and approved["decidedAt"]
+assert client.post(f"/runs/{delivery_run}/deliveries/{delivery['id']}/decide", json=decision).raise_for_status().json()["status"] == "APPROVED"
+assert client.post(f"/runs/{delivery_run}/deliveries/{delivery['id']}/decide",
+                   json={**decision, "decision": "reject"}).status_code == 409
+checks.append("delivery_decision_binds_patch_and_target_fingerprint_and_is_final")
+assert client.post(f"/deliveries/{delivery['id']}/claim", json={"executorToken": "d" * 64}).status_code == 409
+for _ in range(2):
+    assert client.post(f"/deliveries/{delivery['id']}/claim", json={"executorToken": executor_token}).raise_for_status().json()["status"] == "APPLYING"
+assert client.post(f"/runs/{delivery_run}/deliveries", json={**survey_body, "id": str(uuid.uuid4())}).status_code == 409
+receipt = {"executorToken": executor_token, "status": "APPLIED", "receipt": {"files_written": 2, "head": "a" * 40}}
+for _ in range(2):
+    assert client.post(f"/deliveries/{delivery['id']}/finish", json=receipt).raise_for_status().json()["status"] == "APPLIED"
+assert client.post(f"/deliveries/{delivery['id']}/finish", json={**receipt, "status": "INVALIDATED"}).status_code == 409
+assert client.post(f"/deliveries/{delivery['id']}/claim", json={"executorToken": executor_token}).raise_for_status().json()["status"] == "APPLIED"
+checks.append("only_the_registering_executor_applies_and_repeats_are_no_ops")
+older = client.post(f"/runs/{delivery_run}/deliveries", json={**survey_body, "id": str(uuid.uuid4())}).raise_for_status().json()
+newer = client.post(f"/runs/{delivery_run}/deliveries",
+                    json={**survey_body, "id": str(uuid.uuid4()), "targetFingerprint": "a" * 64}).raise_for_status().json()
+rows = {row["id"]: row for row in client.get(f"/runs/{delivery_run}/deliveries").raise_for_status().json()}
+assert rows[older["id"]]["status"] == "INVALIDATED" and rows[older["id"]]["receipt"]["superseded_by"] == newer["id"]
+assert rows[newer["id"]]["status"] == "PENDING" and all("executorSha256" not in row for row in rows.values())
+assert client.post(f"/runs/{delivery_run}/deliveries/{older['id']}/decide", json=decision).status_code == 409
+rejected = client.post(f"/runs/{delivery_run}/deliveries/{newer['id']}/decide",
+                       json={**decision, "decision": "reject", "targetFingerprint": "a" * 64}).raise_for_status().json()
+assert rejected["status"] == "REJECTED"
+assert client.post(f"/deliveries/{newer['id']}/claim", json={"executorToken": executor_token}).status_code == 409
+assert client.get(f"/deliveries/{newer['id']}").raise_for_status().json()["status"] == "REJECTED"
+detail = client.get(f"/runs/{delivery_run}").raise_for_status().json()
+delivery_events = [e["type"] for e in detail["events"] if e["type"].startswith("DELIVERY_")]
+assert delivery_events == ["DELIVERY_REQUESTED", "DELIVERY_APPROVED", "DELIVERY_APPLYING", "DELIVERY_APPLIED",
+                           "DELIVERY_REQUESTED", "DELIVERY_INVALIDATED", "DELIVERY_REQUESTED", "DELIVERY_REJECTED"], delivery_events
+checks.append("a_newer_survey_supersedes_an_undecided_delivery_and_rejection_blocks_apply")
+
 report = {
     "checks": checks,
-    "run_ids": [cancelled, owned, expired, abandoned, paused_run, invalidated, reviewable, too_late, single_file, created["id"]],
+    "run_ids": [cancelled, owned, expired, abandoned, paused_run, invalidated, reviewable["id"], too_late["id"], single_file, created["id"],
+                delivery_run],
     "note": "Synthetic control-plane verification, no model calls.",
 }
 path = root / "runtime" / "validation" / "protocol.json"

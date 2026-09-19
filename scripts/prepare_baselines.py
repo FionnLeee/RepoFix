@@ -11,9 +11,10 @@ from register_repository import register
 root = Path(__file__).resolve().parents[1]
 tasks = json.loads((root / "benchmarks/tasks.json").read_text(encoding="utf-8"))
 runtime = root / "runtime"
-runtime.mkdir(exist_ok=True)
-with tempfile.TemporaryDirectory(dir=runtime) as temporary:
-    repo = Path(temporary)
+
+
+def build_repository(repo: Path) -> str:
+    """Materialise the baseline tasks as one commit; identical inputs give an identical commit id."""
     env = os.environ.copy()
     env.update(GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=os.devnull,
                GIT_AUTHOR_NAME="RepoPilot Baseline", GIT_COMMITTER_NAME="RepoPilot Baseline",
@@ -31,12 +32,19 @@ with tempfile.TemporaryDirectory(dir=runtime) as temporary:
             target.write_bytes(content.encode())
     git("add", "--", ".")
     git("commit", "-q", "-m", "baseline tasks v1")
-    commit = git("rev-parse", "HEAD").decode().strip()
-    registered = register(repo, "baseline-v1", commit, runtime / "repositories")
-catalog = [{"id": t["id"], "title": t["title"], "task": t["task"], "spec": {
-    "source": registered["source"], "commit": commit, "subdir": t["id"],
-    "allowedPaths": sorted(t["reference"]), "verificationFiles": t["verification"],
-    "testCommand": "python -m unittest discover -v",
-}} for t in tasks]
-(runtime / "baseline-catalog.json").write_text(json.dumps(catalog, ensure_ascii=False, indent=2), encoding="utf-8")
-print(json.dumps({"tasks": len(catalog), **registered}))
+    return git("rev-parse", "HEAD").decode().strip()
+
+
+if __name__ == "__main__":
+    runtime.mkdir(exist_ok=True)
+    with tempfile.TemporaryDirectory(dir=runtime) as temporary:
+        repo = Path(temporary)
+        commit = build_repository(repo)
+        registered = register(repo, "baseline-v1", commit, runtime / "repositories")
+    catalog = [{"id": t["id"], "title": t["title"], "task": t["task"], "spec": {
+        "source": registered["source"], "commit": commit, "subdir": t["id"],
+        "allowedPaths": sorted(t["reference"]), "verificationFiles": t["verification"],
+        "testCommand": "python -m unittest discover -v",
+    }} for t in tasks]
+    (runtime / "baseline-catalog.json").write_text(json.dumps(catalog, ensure_ascii=False, indent=2), encoding="utf-8")
+    print(json.dumps({"tasks": len(catalog), **registered}))

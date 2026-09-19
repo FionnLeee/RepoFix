@@ -51,6 +51,7 @@ import { Type } from "class-transformer";
 import { readFileSync, existsSync } from "node:fs";
 import { timingSafeEqual } from "node:crypto";
 import { ContextService, ContextOwner, IndexBegin, IndexPublish, MemoryWrite, projectKey } from "./context";
+import { DeliveryClaim, DeliveryDecision, DeliveryReceipt, DeliveryService, PrepareDelivery } from "./delivery";
 
 const TASK =
   "修复 pricing.py 中 discounted_total：百分比折扣应按百分比计算，结果保留两位小数，并拒绝小于 0 或大于 100 的折扣。运行开发测试后提交补丁。";
@@ -493,6 +494,27 @@ class Api {
     return this.db.event.findMany({
       where: { runId: id, type: "CHECKPOINT_SAVED" }, orderBy: { id: "asc" },
     });
+  }
+  // Delivery: the host-side executor registers a target survey, the person approves it here, and the
+  // same executor applies the patch. These share the local single-user trust boundary of approvals.
+  @Get("runs/:id/deliveries") deliveries(@Param("id") id: string) {
+    return new DeliveryService(this.db).list(id);
+  }
+  @Post("runs/:id/deliveries") prepareDelivery(@Param("id") id: string, @Body() body: PrepareDelivery) {
+    return new DeliveryService(this.db).prepare(id, body);
+  }
+  @Post("runs/:id/deliveries/:deliveryId/decide") decideDelivery(@Param("id") id: string,
+    @Param("deliveryId") deliveryId: string, @Body() body: DeliveryDecision) {
+    return new DeliveryService(this.db).decide(id, deliveryId, body);
+  }
+  @Get("deliveries/:id") delivery(@Param("id") id: string) {
+    return new DeliveryService(this.db).get(id);
+  }
+  @Post("deliveries/:id/claim") claimDelivery(@Param("id") id: string, @Body() body: DeliveryClaim) {
+    return new DeliveryService(this.db).claim(id, body);
+  }
+  @Post("deliveries/:id/finish") finishDelivery(@Param("id") id: string, @Body() body: DeliveryReceipt) {
+    return new DeliveryService(this.db).finish(id, body);
   }
   @Get("runs/:id/approvals") async approvals(@Param("id") id: string) {
     if (!(await this.db.run.findUnique({ where: { id } }))) throw new NotFoundException();

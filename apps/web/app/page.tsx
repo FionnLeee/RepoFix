@@ -43,6 +43,29 @@ type Approval = {
   requestedAt: string;
   decidedAt?: string | null;
 };
+type Delivery = {
+  id: string;
+  status: string;
+  targetPath: string;
+  targetHead: string;
+  baseCommit: string;
+  patchSha256: string;
+  targetFingerprint: string;
+  files: { path: string; change: string; before: string | null; after: string | null }[];
+  expiresAt: string;
+  decidedAt?: string | null;
+  receipt?: { reason?: string; files_written?: number; already_applied?: boolean } | null;
+  createdAt: string;
+};
+const deliveryLabels: Record<string, string> = {
+  PENDING: "等待你批准",
+  APPROVED: "已批准，等待执行器应用",
+  REJECTED: "已拒绝",
+  APPLYING: "执行器正在应用",
+  APPLIED: "已应用到目标",
+  INVALIDATED: "已作废",
+  NEEDS_ATTENTION: "需要人工处理",
+};
 type Run = {
   id: string;
   mode: string;
@@ -128,6 +151,13 @@ const labels: Record<string, string> = {
   REVIEW_UNRESOLVED: "修订后仍有阻断项",
   REVIEW_FAILED: "评审未能完成",
   REVISION_REQUESTED: "要求有限修订",
+  DELIVERY_REQUESTED: "登记交付到目标仓库",
+  DELIVERY_APPROVED: "已批准交付",
+  DELIVERY_REJECTED: "已拒绝交付",
+  DELIVERY_APPLYING: "执行器开始应用补丁",
+  DELIVERY_APPLIED: "补丁已应用到目标仓库",
+  DELIVERY_INVALIDATED: "交付已作废",
+  DELIVERY_NEEDS_ATTENTION: "交付需要人工处理",
 };
 async function api<T>(path: string, body?: unknown): Promise<T> {
   const res = await fetch(
@@ -193,12 +223,19 @@ function Workspace() {
     enabled: !!id,
     refetchInterval: 5000,
   });
+  const deliveries = useQuery({
+    queryKey: ["deliveries", id],
+    queryFn: () => api<Delivery[]>(`/runs/${id}/deliveries`),
+    enabled: !!id && detail.data?.status === "SUCCEEDED",
+    refetchInterval: 5000,
+  });
   useEffect(() => {
     if (!id) return;
     const stream = new EventSource(`/api/runs/${id}/stream`);
     stream.onmessage = () => {
       void qc.invalidateQueries({ queryKey: ["run", id] });
       void qc.invalidateQueries({ queryKey: ["runs"] });
+      void qc.invalidateQueries({ queryKey: ["deliveries", id] });
     };
     return () => stream.close();
   }, [id, qc]);
@@ -243,11 +280,27 @@ function Workspace() {
       setError((e as Error).message);
     }
   }
+  // The decision carries the patch hash and target fingerprint the card displayed, so the server
+  // can refuse it if the executor registered a newer survey in the meantime.
+  async function decideDelivery(delivery: Delivery, decision: string) {
+    try {
+      await api(`/runs/${id}/deliveries/${delivery.id}/decide`, {
+        decision, patchSha256: delivery.patchSha256, targetFingerprint: delivery.targetFingerprint,
+      });
+      setError("");
+      await qc.invalidateQueries({ queryKey: ["deliveries", id] });
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  }
   const run = detail.data,
     events = run?.events?.filter((e) => e.type !== "HEARTBEAT") || [];
   const active =
     run && ["QUEUED", "RUNNING", "VERIFYING", "WAITING_APPROVAL"].includes(run.status);
   const pending = run?.approvals?.find((a) => a.status === "PENDING");
+  const accepted = run?.status === "SUCCEEDED" && !!run.spec && !!run.result?.patch &&
+    (run.result.verification?.delegated ? run.evaluation?.status === "resolved" : run.result.verification?.passed === true);
+  const pendingDelivery = deliveries.data?.find((d) => d.status === "PENDING");
   // A review is evidence for the candidate version it read, so one that a revision replaced is
   // shown as expired rather than as a current opinion.
   const reviewHistory = run?.result?.review?.reviews ?? [];
@@ -461,6 +514,7 @@ function Workspace() {
                   ["trace", "执行轨迹"],
                   ["patch", "候选补丁"],
                   ["tests", "验收结果"],
+                  ["delivery", "交付到仓库"],
                   ["context", "上下文"],
                   ["memory", "项目记忆"],
                 ].map(([value, label]) => (
@@ -473,9 +527,91 @@ function Workspace() {
                   >
                     {label}
                     {value === "trace" && <span>{events.length}</span>}
+                    {value === "delivery" && pendingDelivery && <span>1</span>}
                   </button>
                 ))}
               </div>
+              {tab === "delivery" && (
+                <div className="result-view">
+                  <h3>
+                    <GitBranch size={17} />
+                    交付到你的仓库
+                  </h3>
+                  {!accepted ? (
+                    <p className="empty-inline">
+                      {run.status === "SUCCEEDED"
+                        ? "只有通过独立验收（或官方 harness 判定 resolved）的候选才能交付；本任务尚未满足。"
+                        : "任务完成并通过独立验收后，可以把补丁应用到你自己的 checkout。"}
+                    </p>
+                  ) : (
+                    <>
+                      <p>
+                        Agent 只在私有沙箱里工作，不会接触你的仓库。交付由你机器上的执行器完成：它先核对目标处于基线版本
+                        <code>{run.spec!.commit.slice(0, 12)}</code>，把看到的目标指纹登记到这里；你在下面批准的正是那份补丁与那个目标版本；
+                        执行器只在目标仍然一致时写入，重复运行不会重复写入。
+                      </p>
+                      <code className="command">
+                        $ python scripts/deliver.py prepare --run {run.id} --target &lt;你的仓库根目录&gt;
+                      </code>
+                      {!deliveries.data?.length && <p className="empty-inline">还没有登记过交付。</p>}
+                    </>
+                  )}
+                  {deliveries.data?.map((delivery) => (
+                    <div className={delivery.status === "PENDING" ? "approval" : "memory-card"} key={delivery.id}>
+                      <div className="approval-head">
+                        <ShieldAlert size={16} />
+                        <strong>{deliveryLabels[delivery.status] || delivery.status}</strong>
+                        <span className="muted">
+                          {new Date(delivery.createdAt).toLocaleTimeString("zh-CN")}
+                        </span>
+                      </div>
+                      <p>目标：<code>{delivery.targetPath}</code></p>
+                      <p>
+                        目标 HEAD {delivery.targetHead.slice(0, 12)}
+                        {delivery.targetHead === delivery.baseCommit
+                          ? " · 与任务基线相同"
+                          : ` · 与基线 ${delivery.baseCommit.slice(0, 12)} 不同，但受影响文件已核对为基线版本`}
+                      </p>
+                      <ul className="review-history">
+                        {delivery.files.map((file) => (
+                          <li key={file.path}>
+                            <span>{{ added: "新增", modified: "修改", deleted: "删除" }[file.change] || file.change}</span>
+                            <span className="muted">{file.path}</span>
+                          </li>
+                        ))}
+                      </ul>
+                      <p className="approval-binding">
+                        补丁 {delivery.patchSha256.slice(0, 12)}… · 目标指纹 {delivery.targetFingerprint.slice(0, 12)}… ·
+                        {delivery.status === "PENDING" || delivery.status === "APPROVED"
+                          ? ` ${new Date(delivery.expiresAt).toLocaleTimeString("zh-CN")} 前有效`
+                          : delivery.receipt?.reason
+                            ? ` ${delivery.receipt.reason}`
+                            : delivery.status === "APPLIED"
+                              ? delivery.receipt?.already_applied ? " 目标已含候选内容，本次未写入" : ` 写入 ${delivery.receipt?.files_written ?? "?"} 个文件`
+                              : ""}
+                      </p>
+                      {delivery.status === "PENDING" && (
+                        <>
+                          <div className="task-actions">
+                            <Button onClick={() => decideDelivery(delivery, "approve")}>
+                              <Check size={14} />
+                              批准应用这份补丁
+                            </Button>
+                            <Button variant="outline" onClick={() => decideDelivery(delivery, "reject")}>
+                              <Square size={12} />
+                              拒绝
+                            </Button>
+                          </div>
+                          <p>批准后在你的机器上运行：<code>python scripts/deliver.py apply --delivery {delivery.id}</code></p>
+                        </>
+                      )}
+                    </div>
+                  ))}
+                  {pendingDelivery && run.result?.patch && (
+                    <CandidateDiff runId={run.id} findings={currentFindings} patch={run.result.patch} />
+                  )}
+                </div>
+              )}
               {tab === "trace" && (
                 <div className="trace-layout">
                   <div className="timeline">
@@ -547,6 +683,11 @@ function Workspace() {
                             （第 {String(event.data.sequence)} 个安全点）恢复，沿用已计入的 {String(event.data.model_calls)} 次模型调用。
                           </p>}
                           {event.type === "QUOTA_FALLBACK" && <p>{String(event.data.effect || "")}</p>}
+                          {event.type.startsWith("DELIVERY_") && <p>
+                            目标 {String(event.data.target || "")}
+                            {event.type === "DELIVERY_REQUESTED" && ` · 指纹 ${String(event.data.target_fingerprint || "").slice(0, 12)}… · ${(event.data.files as string[] | undefined)?.length ?? 0} 个文件`}
+                            {event.type === "DELIVERY_APPLIED" && ` · 写入 ${String((event.data.receipt as { files_written?: number } | undefined)?.files_written ?? "?")} 个文件`}
+                          </p>}
                           {event.type === "SUCCEEDED" && (
                             <p>候选源码已在干净环境中通过独立测试。</p>
                           )}

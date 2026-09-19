@@ -15,7 +15,7 @@
 - 新建 image 任务不再从 gold 提取允许路径，也不把 `FAIL_TO_PASS` 注入开发命令。snapshot 适配需要显式 allowedPaths。**历史 3/10 来自旧提示配置，不是新配置成绩**；当前尚未重跑真实模型实验。gold 筛选只说明本机暂可评测性，不能推断其他补丁不可能通过。
 - Coder、Reviewer 和 image 模式共用 Redis 配额及请求前预算检查；Redis 失联拒绝新增模型请求，槽位按到期时间回收。review 计数与轨迹立即持久化。`agent.step` 与 `model.call` 分开计时。
 - 无效评审输出记录失败；意见被丢弃或证据截断时显示“不完整”。开发测试改变候选会使评审证据失效。大文件优先提供 diff hunk 附近代码，删除文件支持 base 侧定位，diff 列表包含新增文件。Reviewer 仍无工具；不能据此宣称已证明评审效果提升。
-- strict 是保守的命令审批：仅少量可确认只读的直接命令免审批，脚本、复合 shell 与不确定命令都需批准。auto 仍只是常见写法提示，不是完整权限模型。最终 patch 应用到用户 checkout 的审批尚未实现；现阶段只在私有沙箱生成候选。
+- strict 是保守的命令审批：仅少量可确认只读的直接命令免审批，脚本、复合 shell 与不确定命令都需批准。auto 仍只是常见写法提示，不是完整权限模型。最终 patch 应用到用户自己 checkout 的审批见下方「交付到目标仓库」：这是设计里真正需要人工批准的动作，沙箱内编辑不依赖它。
 
 历史记录中关于 Redis fail-open、自动选择历史非空补丁和 gold 派生提示的描述已被以上行为替代。
 
@@ -140,11 +140,11 @@ managed 工具输出绑定执行后的工作区哈希；后续文件变化时，
 - **失联自动重排队**：Worker 心跳续租，租约过期时控制端检查该任务已登记的最新检查点，存在可恢复点且未超过 3 次恢复上限就重新入队，否则停在中断。被顶掉的旧 Worker 收到 409 后只停止本次尝试，不写任何状态。
 - **跨代次恢复**：重新认领会得到新的执行代次，新代次用检查点里的工作区重建沙箱，校验任务、来源、镜像、Agent 配置与工作区摘要后从同一安全边界继续，已消耗的模型调用、工具调用与计时一并继承。被中断步骤在沙箱内的副作用随容器丢弃，原尝试轨迹另存为 `runtime/artifacts/<run-id>/trajectory-before-recovery-g<N>.json`。
 - **版本绑定审批**：动作审批策略为 `auto`（默认，写入允许范围之外的位置时需批准）或 `strict`（所有文件写入都需批准）。命中时 Worker 在安全边界保存检查点并登记审批，任务进入“等待审批”；批准只对该动作与当时的工作区版本有效，恢复时再次核对动作哈希与工作区版本，拒绝则把决定作为观察交回模型。页面提供批准／拒绝按钮。
-- **共享模型并发配额**：Redis 令牌槽限制所有 Worker 合计的并发模型调用数（`MODEL_MAX_CONCURRENCY`，默认 2），槽位带 TTL，Worker 崩溃不会永久占用；Redis 不可用时记录 `QUOTA_FALLBACK` 并继续，不伪装成受限。
+- **共享模型并发配额**：Redis 令牌槽限制所有 Worker 合计的并发模型调用数（`MODEL_MAX_CONCURRENCY`，默认 2），槽位带 TTL，Worker 崩溃不会永久占用；Redis 不可用时记录 `QUOTA_UNAVAILABLE` 并拒绝新增模型请求（fail-closed），不解除跨 Worker 上限；image 模式的 Coder 与 Reviewer 都走同一入口，请求前检查取消与调用次数／时间／费用预算。
 - **孤儿沙箱回收**：Worker 周期扫描带 `repopilot.managed=sandbox` 标签的容器，只清理不属于活跃运行且超过 90 秒宽限的容器；控制端不可达时不做任何删除。
 - **broker 断线重连**：控制端发布 Outbox 失败时重建连接，未发布的行保留到下个周期重发。
 
-确定性验证（无生成模型调用）：`scripts/approval_smoke.py` 在 `strict` 策略下暂停、批准、跨代次恢复并完成验收；`scripts/recovery_check.py` 注入租约过期，验证重排队、从登记检查点恢复、旧尝试不留状态与无主沙箱被回收；`scripts/quota_check.py` 在真实 Redis 上验证峰值并发等于上限、等待者串行与槽位回收。Linux Worker 镜像 48 项 pytest、协议检查 16 项、ruff、构建与页面检查通过。这些是功能与故障检查，不是效果评测。
+确定性验证（无生成模型调用）：`scripts/approval_smoke.py` 在 `strict` 策略下暂停、批准、跨代次恢复并完成验收；`scripts/recovery_check.py` 注入租约过期，验证重排队、从登记检查点恢复、旧尝试不留状态与无主沙箱被回收；`scripts/quota_check.py` 在真实 Redis 上验证峰值并发等于上限、等待者串行与槽位回收。Linux Worker 镜像 48 项 pytest、协议检查 16 项、ruff、构建与页面检查通过。这些是功能与故障检查，不是效果评测。交付流程的控制端协议（30 项协议检查中的 6 项）与端到端冒烟见「交付到目标仓库」。
 
 ```bash
 # 严格审批路径：暂停、批准、跨代次恢复、独立验收（确定性任务）
@@ -154,6 +154,25 @@ uv run python scripts/recovery_check.py
 # 真实 Redis 上的共享模型并发配额
 docker compose exec -T worker sh -c 'python scripts/quota_check.py'
 ```
+
+## 交付到目标仓库（最终 patch 审批）
+
+Agent 始终只在私有沙箱里工作，看不到宿主路径。候选通过独立验收（或官方 harness 判定 resolved）之后，把补丁应用到你自己的 checkout 是一个单独审批、单独执行的动作，由宿主侧执行器 `scripts/deliver.py` 完成，控制端只记录与仲裁：
+
+1. `prepare`：在本机核对目标是 Git 工作树根目录、含任务固定的 base commit，补丁影响的每个文件当前内容都等于 base 版本（新增文件不存在、删除／修改文件与 base blob 一致；用 `git hash-object --path` 比较，兼容 autocrlf checkout），并在临时 index 上预演补丁。通过后把目标路径、HEAD、影响文件（含前后 blob）、目标指纹和执行器令牌哈希登记到控制端，状态 `PENDING`，30 分钟有效。任何一项不满足就不登记；目标已含候选内容时提示无需交付；文件处于"既非 base 也非候选"的混合状态时要求人工处理。
+2. 页面「交付到仓库」页签展示目标、HEAD 是否与基线相同、影响文件、补丁哈希与目标指纹及完整 diff；批准请求带上页面看到的补丁哈希与指纹，登记内容不同则拒绝。同一目标登记新快照会作废旧的未决审批。
+3. `apply`：只有持有令牌的登记执行器能认领（`APPLYING`）；写入前重新计算指纹，目标或 HEAD 变了就回报 `INVALIDATED` 不写任何文件；`git apply --check` 失败回报 `NEEDS_ATTENTION`；写入后校验每个文件等于预期候选 blob 才记 `APPLIED`。目标已含全部候选内容时记 `APPLIED(already_applied)` 而不重写；重复运行、执行器中途崩溃后重跑都不会二次写入。目标里与补丁无关的未提交改动原样保留。
+
+```bash
+# 任务通过验收后，在你的机器上：
+python scripts/deliver.py prepare --run <run-id> --target <你的仓库根目录>
+# 在页面批准后：
+python scripts/deliver.py apply --delivery <delivery-id>
+# 端到端确定性冒烟（演示任务补丁落到 runtime/delivery-target，含无关改动保留、作废与混合状态）
+python scripts/delivery_smoke.py
+```
+
+它不做的事：不 commit、不改 index、不处理二进制或重命名以外的特殊文件、不跨机器执行（登记与应用必须是同一台机器上的同一执行器状态文件 `runtime/deliveries/<id>.json`）。交付接口与任务接口一样只对本机开放。
 
 ## M4 独立评审与工作台
 

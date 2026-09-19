@@ -32,7 +32,27 @@ model Run {
   updatedAt DateTime @updatedAt
   events Event[]
   approvals Approval[]
+  deliveries Delivery[]
   @@index([status, leaseUntil])
+}
+model Delivery {
+  id String @id
+  runId String
+  run Run @relation(fields: [runId], references: [id])
+  targetPath String
+  targetHead String
+  baseCommit String
+  patchSha256 String
+  targetFingerprint String
+  executorSha256 String
+  files Json
+  status String @default("PENDING")
+  expiresAt DateTime
+  decidedAt DateTime?
+  receipt Json?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @default(now()) @updatedAt
+  @@index([runId, createdAt])
 }
 model Approval {
   id String @id @default(uuid())
