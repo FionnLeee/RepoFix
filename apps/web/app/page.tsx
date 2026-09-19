@@ -49,6 +49,7 @@ type Run = {
   task: string;
   status: string;
   workerId: string | null;
+  evaluation?: { status: string; patchSha256: string; batchId: string } | null;
   baselineId?: string;
   contextMode?: string;
   projectId?: string;
@@ -62,7 +63,7 @@ type Run = {
   events: Event[];
   result?: {
     patch?: string;
-    verification?: { output?: string; passed?: boolean; delegated?: string };
+    verification?: { output?: string; passed?: boolean | null; delegated?: string };
     model_calls?: number;
     artifact_path?: string;
     error?: string;
@@ -94,7 +95,9 @@ const labels: Record<string, string> = {
   RUNNING: "执行中",
   VERIFYING: "独立验收",
   WAITING_APPROVAL: "等待审批",
-  SUCCEEDED: "已通过",
+  SUCCEEDED: "执行完成",
+  EVALUATION_IMPORTED: "官方验收结果已导入",
+  QUOTA_UNAVAILABLE: "配额不可用，模型请求已停止",
   FAILED: "未通过",
   CANCELLED: "已取消",
   INTERRUPTED: "执行中断",
@@ -402,7 +405,9 @@ function Workspace() {
               <div className="panel-heading">
                 <div className="run-title">
                   <span className={`status ${run.status.toLowerCase()}`}>
-                    {labels[run.status] || run.status}
+                    {run.evaluation ? ({resolved: "官方验收通过", unresolved: "官方验收未通过", infra_failed: "官方验收环境失败"}[run.evaluation.status] || run.evaluation.status)
+                      : run.status === "SUCCEEDED" ? (run.result?.verification?.delegated ? "候选已生成，待官方验收"
+                        : run.result?.verification?.passed === true ? "独立验收通过" : "执行完成") : labels[run.status] || run.status}
                   </span>
                   <span>
                     {run.mode === "live" ? "真实模型运行" : "确定性链路演示"}
@@ -575,7 +580,9 @@ function Workspace() {
                       <dt>执行环境</dt>
                       <dd>独立容器 · 默认断网</dd>
                       <dt>验证方式</dt>
-                      <dd>{run.result?.verification?.delegated ? "交由官方 harness 判定" : "干净副本 + 固定测试"}</dd>
+                      <dd>{run.result?.verification?.delegated
+                        ? (run.evaluation ? `官方 harness：${run.evaluation.status}` : "候选已生成，等待官方 harness 判定")
+                        : "干净副本 + 固定测试"}</dd>
                       <dt>运行追踪</dt>
                       <dd>{run.result?.trace_id ? <a href={`http://localhost:16686/trace/${run.result.trace_id}`}
                         target="_blank" rel="noreferrer">{run.result.trace_id.slice(0, 16)}… ↗</a> : "未开启（未配置 OTLP）"}</dd>
@@ -641,6 +648,7 @@ function Workspace() {
                         {reviewHistory.map((record) => <li key={record.round}>
                           <span>第 {record.round} 轮评审</span>
                           <span className="muted">{record.status === "failed" ? `未能完成：${record.error}` : record.summary}</span>
+                          {record.status === "partial" && <span className="stale">评审不完整：部分证据未覆盖或意见无效</span>}
                           <span>{record.findings?.length ?? 0} 条意见{record.invalid?.length ? `，丢弃 ${record.invalid.length} 条无效位置` : ""}</span>
                           {record.candidate_sha256 && staleReviews.has(record.candidate_sha256)
                             && <span className="stale">已过期：候选版本此后被修订，位置仅对当时的版本有效</span>}

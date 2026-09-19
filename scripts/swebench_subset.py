@@ -8,14 +8,14 @@
 流程与口径：
 
 1. 镜像不存在就拉取（每个约 4 GB，磁盘是主要约束）。
-2. **gold 筛选**：先用实例自带的 gold 补丁跑一遍官方 harness。gold 在本机都过不了的实例，
-   任何补丁都不可能被判 resolved，纳入进去只会污染分母——这类实例单列并写明理由。
+2. **gold 筛选**：先用实例自带的 gold 补丁跑一遍官方 harness。未通过的实例单列为
+   本机暂不可评测；这不证明任何其他补丁都不可能通过。
 3. 对筛过的实例各提交一次 RepoPilot 运行（真实模型），等它们到终态。
 4. 导出预测：没产出补丁的尝试按"空提交"计入（官方 harness 自己会把它判为未解决）。
 5. 一条 harness 命令判定全部实例，报告写入 runtime/validation/。
 
-必须随数字一起写的口径：`allowedPaths` 取自 gold 补丁的文件列表，等于给了执行者提示，
-所以结果与公开榜单不可比；样本按"环境可评测性"筛选，不按难度；每实例默认只跑一次。
+当前运行不从 gold 或 FAIL_TO_PASS 生成 Agent 提示。样本按本机可评测性筛选，
+仍须列出原始样本、排除项、预算与重试；历史带提示的 3/10 不代表当前配置成绩。
 """
 
 import argparse
@@ -24,6 +24,7 @@ import os
 import subprocess
 import sys
 import time
+import uuid
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -42,18 +43,19 @@ def rel(path):
     return str(Path(path).resolve().relative_to(ROOT)).replace("\\", "/")
 
 
-def harness(instance_ids, predictions, run_id, extra=()):
+def harness(instance_ids, predictions, run_id, extra=(), report_dir=None):
     """Run the official harness in its Linux container over the given instances."""
+    report_dir = report_dir or VALIDATION
     command = ["docker", "run", "--rm", "-v", "/var/run/docker.sock:/var/run/docker.sock",
                "-v", f"{ROOT}:/work", "-w", "/work", HARNESS_IMAGE,
                "--dataset_name", "runtime/swebench/swe-bench-lite-test.json",
                "--predictions_path", rel(predictions), "--max_workers", "1", "--run_id", run_id,
-               "--instance_ids", *instance_ids, "--report_dir", rel(VALIDATION), *extra]
+               "--instance_ids", *instance_ids, "--report_dir", rel(report_dir), *extra]
     print(f"[harness] {run_id}: {len(instance_ids)} instance(s)", flush=True)
     completed = subprocess.run(command, cwd=ROOT, capture_output=True, text=True,
                                encoding="utf-8", errors="replace", timeout=7200,
                                env={**os.environ, "MSYS_NO_PATHCONV": "1"})
-    found = sorted(VALIDATION.glob(f"*.{run_id}.json"))  # the harness names it <model>.<run_id>.json
+    found = sorted(report_dir.glob(f"*.{run_id}.json"))
     report = found[0] if found else None
     if completed.returncode or report is None:
         raise SystemExit(f"harness failed for {run_id}: {completed.stdout[-400:]}{completed.stderr[-400:]}")
@@ -102,7 +104,7 @@ def wait_for_runs(run_ids, limit=3600):
     deadline = time.monotonic() + limit
     while time.monotonic() < deadline:
         states = {run_id: cli.api(f"/runs/{run_id}")["status"] for run_id in run_ids}
-        pending = [run_id for run_id, status in states.items() if status in ("QUEUED", "RUNNING", "WAITING_APPROVAL")]
+        pending = [run_id for run_id, status in states.items() if status not in swebench.TERMINAL]
         print(f"[runs] {len(run_ids) - len(pending)}/{len(run_ids)} finished", flush=True)
         if not pending:
             return states
@@ -110,28 +112,62 @@ def wait_for_runs(run_ids, limit=3600):
     raise SystemExit("runs did not finish in time")
 
 
+def publish_evaluations(report):
+    verdict = report["verdict"]
+    resolved = set(verdict.get("resolved_ids") or [])
+    unresolved = set(verdict.get("unresolved_ids") or []) | set(verdict.get("empty_patch_ids") or [])
+    errors = set(verdict.get("error_ids") or [])
+    for binding in report.get("bindings", []):
+        instance = binding["instance_id"]
+        memberships = [instance in ids for ids in (resolved, unresolved, errors)]
+        if sum(memberships) != 1:
+            raise ValueError(f"Official report has no unique verdict for {instance}")
+        status = "resolved" if memberships[0] else "unresolved" if memberships[1] else "infra_failed"
+        cli.api(f"/runs/{binding['run_id']}/evaluation", {
+            "instanceId": instance, "patchSha256": binding["patch_sha256"],
+            "status": status, "batchId": report["batch_id"]})
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--instances", nargs="+", required=True)
+    parser.add_argument("--instances", nargs="+")
+    parser.add_argument("--publish-batch", type=Path, help="只导入已归档 manifest 的官方结果，不调用模型")
     parser.add_argument("--screen-only", action="store_true")
     parser.add_argument("--max-rounds", type=int, default=None, help="review revision budget for each run")
     args = parser.parse_args()
 
-    report = {"instances": args.instances, "screen": {}, "runs": {}, "verdict": {}, "generative_model_calls": 0}
+    if args.publish_batch:
+        publish_evaluations(json.loads(args.publish_batch.read_text(encoding="utf-8")))
+        return 0
+    if not args.instances:
+        parser.error("需要 --instances 或 --publish-batch")
+
+    if len(set(args.instances)) != len(args.instances):
+        parser.error("实例不能重复")
+    batch_id = "subset-" + uuid.uuid4().hex
+    folder = VALIDATION / batch_id
+    folder.mkdir(parents=True)
+    report = {"batch_id": batch_id, "instances": args.instances, "screen": {}, "runs": {},
+              "attempts": {}, "verdict": {}, "generative_model_calls": None}
+
+    def save():
+        (folder / "manifest.json").write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    save()
     pulled, pull_failed = ensure_images(args.instances)
     report["pulled_images"] = pulled
     report["image_failures"] = pull_failed
 
     screened = [i for i in args.instances if i not in pull_failed]
-    gold = harness(screened, gold_predictions(screened, VALIDATION / "swebench-subset-gold.jsonl"),
-                   "repopilot-subset-gold")
+    gold = (harness(screened, gold_predictions(screened, folder / "gold.jsonl"),
+                    batch_id + "-gold", report_dir=folder) if screened else {"resolved_ids": []})
     screenable = gold["resolved_ids"]
     blocked = sorted(set(screened) - set(screenable))
     report["screen"] = {"screenable": screenable, "blocked": blocked,
-                        "note": "gold 在本机也过不了的实例不计入分母；理由见 evidence/M5-swebench.md"}
+                        "note": "gold 未通过者单列；原始样本、排除项和可评测样本均保留"}
     print(f"[screen] screenable={screenable} blocked={blocked}", flush=True)
     if args.screen_only or not screenable:
-        (VALIDATION / "swebench-subset.json").write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+        save()
         print(json.dumps(report, ensure_ascii=False)[:400])
         return 0
 
@@ -140,11 +176,14 @@ def main():
             json.loads((CACHE / f"{instance_id}.json").read_text(encoding="utf-8")))
         if args.max_rounds is not None:
             payload["reviewRounds"] = args.max_rounds
-        payload["requestKey"] = f"subset-{instance_id}-{int(time.time() * 1000)}"
-        return cli.api("/runs", payload)["id"]
+        payload["requestKey"] = str(uuid.uuid4())
+        run_id = cli.api("/runs", payload)["id"]
+        report["attempts"].setdefault(instance_id, []).append(run_id)
+        report["runs"][instance_id] = run_id
+        save()
+        return run_id
 
     run_ids = {instance_id: submit(instance_id) for instance_id in screenable}
-    report["runs"] = dict(run_ids)
     states = wait_for_runs(list(run_ids.values()))
     # A provider outage is not an agent outcome. Retry once, then report it separately instead
     # of scoring it as an attempt that produced nothing.
@@ -165,22 +204,38 @@ def main():
     report["infra_failed"] = infra
     judged = [instance_id for instance_id in screenable if instance_id not in infra]
     report["judged"] = judged
+    report["runs"] = dict(run_ids)
     states = {run_id: cli.api(f"/runs/{run_id}")["status"] for run_id in run_ids.values()}
 
-    predictions = VALIDATION / "swebench-subset-predictions.jsonl"
-    rows, skipped = swebench.export_predictions(cli.api("/runs"), "repopilot")
-    rows = [row for row in rows if row["instance_id"] in judged]
+    usage = []
+    for attempts in report["attempts"].values():
+        for run_id in attempts:
+            result = cli.api(f"/runs/{run_id}").get("result") or {}
+            usage.append({"run_id": run_id, **{k: result.get(k) for k in
+                          ("model_calls", "usage", "usage_status", "usage_calls_reported")}})
+    report["attempt_usage"] = usage
+    calls = [row["model_calls"] for row in usage]
+    known = [value for value in calls if type(value) is int]
+    report["known_model_calls"] = sum(known)
+    report["generative_model_calls"] = sum(known) if len(known) == len(calls) else None
+
+    predictions = folder / "predictions.jsonl"
+    rows, skipped, bindings = swebench.batch_predictions({i: run_ids[i] for i in judged}, cli.api)
+    report["bindings"] = bindings
     predictions.write_text("".join(json.dumps(row, ensure_ascii=False) + "\n" for row in rows), encoding="utf-8")
     report["predictions"] = {"file": str(predictions.relative_to(ROOT)), "rows": len(rows),
                              "empty_submissions": [row["instance_id"] for row in rows if not row["model_patch"]],
                              "skipped": [entry for entry in skipped if entry["instance_id"] in judged]}
-    verdict = {} if not judged else harness(judged, predictions, "repopilot-subset")
+    save()
+    verdict = {} if not judged else harness(judged, predictions, batch_id, report_dir=folder)
     report["verdict"] = {"note": "判定的分母里不含 gold 过不了的实例与基础设施失败的实例"} if not verdict else {key: verdict.get(key) for key in
                          ("total_instances", "resolved_instances", "unresolved_instances",
                           "empty_patch_instances", "error_instances",
-                          "resolved_ids", "unresolved_ids", "empty_patch_ids", "failure_reasons")}
+                          "resolved_ids", "unresolved_ids", "empty_patch_ids", "error_ids", "failure_reasons")}
     report["run_states"] = states
-    (VALIDATION / "swebench-subset.json").write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+    save()
+    if judged:
+        publish_evaluations(report)
     print(json.dumps(report["verdict"], ensure_ascii=False))
     return 0
 

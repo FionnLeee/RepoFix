@@ -27,6 +27,7 @@ model Run {
   leaseUntil DateTime?
   cancelRequested Boolean @default(false)
   result Json?
+  evaluation Json?
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
   events Event[]

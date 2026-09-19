@@ -47,7 +47,21 @@ def test_an_image_workspace_works_inside_the_images_own_repository(tmp_path, mon
         run = {"id": str(uuid.uuid4()), "generation": 1, "mode": "demo", "baselineId": "checkout",
                "task": task["task"], "spec": spec.model_dump(), "reviewPolicy": "off"}
         events = []
-        result = execute_repository_run(run, lambda kind, data, status=None: events.append(kind), threading.Event())
+        class CountingQuota:
+            calls = 0
+            held = False
+            def acquire(self):
+                assert not self.held
+                self.held = True
+                self.calls += 1
+                return 0
+            def release(self):
+                assert self.held
+                self.held = False
+        quota = CountingQuota()
+        result = execute_repository_run(run, lambda kind, data, status=None: events.append(kind), threading.Event(),
+                                        quota=quota)
+        assert quota.calls == result["model_calls"] and quota.calls > 0 and not quota.held
         assert result["verification"] == {"passed": None, "delegated": "swebench-harness", "output": "",
                                           "baseline": None, "candidate": None, "patch_replayed": None}
         assert "REPOSITORY_READY" in events and "CANDIDATE" in events and "VERIFICATION_DELEGATED" in events

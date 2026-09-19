@@ -37,7 +37,7 @@ def test_strict_policy_requires_approval_for_any_write():
 def test_ephemeral_targets_and_disabled_policy():
     assert evaluate("echo x > /tmp/scratch", ["pricing.py"])["requires_approval"] is False
     assert evaluate("echo x > /dev/null", ["pricing.py"])["requires_approval"] is False
-    assert evaluate("echo x > /tmp/scratch", ["pricing.py"], "strict")["requires_approval"] is False
+    assert evaluate("echo x > /tmp/scratch", ["pricing.py"], "strict")["requires_approval"] is True
     assert evaluate("echo x > other.py", ["pricing.py"], "off")["requires_approval"] is False
     assert evaluate(None, ["pricing.py"])["requires_approval"] is False
 
@@ -74,3 +74,11 @@ def test_unrecognised_write_forms_are_a_known_limit():
     # Python-level writes are deliberately not modelled: the sandbox and the allowed-path
     # check remain the enforced boundary, and this is reported as a limit, not hidden.
     assert evaluate("python -c \"open('x.py','w').write('1')\"", ["pricing.py"])["targets"] == []
+
+
+def test_strict_rejects_indirect_writes_and_auto_understands_quoted_targets():
+    for command in ('echo x > "pricing.py"', "python script.py", "sh script.sh", "cat $(touch x)"):
+        assert evaluate(command, ["pricing.py"], "strict")["requires_approval"]
+    assert evaluate('echo x > "outside.py"', ["pricing.py"])["requires_approval"]
+    assert evaluate('echo x > "pricing.py"', ["pricing.py"])["requires_approval"] is False
+    assert evaluate("echo x > src/../outside.py", ["src"])["requires_approval"]

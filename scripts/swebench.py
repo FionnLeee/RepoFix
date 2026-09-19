@@ -165,7 +165,7 @@ def prepare(args):
 
 
 def export(args):
-    runs = api("/runs")
+    runs = [api(f"/runs/{run_id}") for run_id in args.run_id]
     rows, skipped = swebench.export_predictions(runs, args.model)
     target = Path(args.out)
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -200,6 +200,8 @@ def main():
     prepare_parser.add_argument("--review-policy", default="auto")
     prepare_parser.add_argument("--submit", action="store_true")
     export_parser = sub.add_parser("export")
+    export_parser.add_argument("--run-id", action="append", required=True,
+                               help="精确选择本轮 run ID；可重复，不能按历史非空补丁挑选")
     export_parser.add_argument("--out", default=str(VALIDATION / "swebench-predictions.jsonl"))
     export_parser.add_argument("--model", default="repopilot")
     import_parser = sub.add_parser("import")

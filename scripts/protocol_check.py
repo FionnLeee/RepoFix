@@ -1,5 +1,6 @@
 """Run with worker containers stopped; uses only synthetic control-plane tasks."""
 
+import hashlib
 import json
 import time
 import uuid
@@ -270,6 +271,39 @@ assert created["spec"]["sandboxImage"].endswith("requests-3362:latest")
 assert created["spec"]["workspacePath"] == "/testbed"
 client.post(f"/runs/{created['id']}/cancel", json={}).raise_for_status()
 checks.append("an_image_workspace_run_keeps_its_image_and_drops_context_management")
+
+# Exact patch/version binding of an imported official result. No worker or model is used.
+evaluated = client.post("/runs", json={"mode": "live", "task": "Synthetic evaluation import protocol check",
+    "spec": {**image_spec, "allowedPaths": []}, "requestKey": f"protocol-{uuid.uuid4()}"}).raise_for_status().json()
+evaluation_id = evaluated["id"]
+claim = client.post(f"/internal/runs/{evaluation_id}/claim", json={"workerId": "protocol-evaluation"},
+                    headers=headers).raise_for_status().json()
+patch = "synthetic patch for protocol validation only"
+evaluation = {"instanceId": image_spec["instanceId"], "patchSha256": hashlib.sha256(patch.encode()).hexdigest(),
+              "status": "unresolved", "batchId": "protocol-evaluation"}
+assert client.post(f"/runs/{evaluation_id}/evaluation", json=evaluation).status_code == 409
+client.post(f"/internal/runs/{evaluation_id}/step", headers=headers, json={
+    "workerId": "protocol-evaluation", "generation": claim["generation"], "key": "synthetic-done",
+    "type": "SUCCEEDED", "status": "SUCCEEDED", "data": {"patch": patch,
+    "verification": {"passed": None, "delegated": "swebench-harness"}}}).raise_for_status()
+assert client.post(f"/runs/{evaluation_id}/evaluation", json={**evaluation, "patchSha256": "0" * 64}).status_code == 409
+assert client.post(f"/runs/{evaluation_id}/evaluation", json={**evaluation, "instanceId": "wrong"}).status_code == 409
+for _ in range(2):
+    imported = client.post(f"/runs/{evaluation_id}/evaluation", json=evaluation).raise_for_status().json()
+    assert imported["evaluation"]["status"] == "unresolved" and imported["status"] == "SUCCEEDED"
+assert client.post(f"/runs/{evaluation_id}/evaluation", json={**evaluation, "status": "resolved"}).status_code == 409
+detail = client.get(f"/runs/{evaluation_id}").raise_for_status().json()
+assert len([e for e in detail["events"] if e["type"] == "EVALUATION_IMPORTED"]) == 1
+checks.append("evaluation_is_separate_immutable_idempotent_and_bound_to_instance_and_patch")
+
+folder = root / "runtime" / "artifacts" / evaluation_id
+folder.mkdir(parents=True, exist_ok=True)
+(folder / "source.json").write_text(json.dumps({"old.py": "old\n", "same.py": "same\n"}), encoding="utf-8")
+(folder / "candidate.json").write_text(json.dumps({"new.py": "new\n", "same.py": "same\n"}), encoding="utf-8")
+candidate = client.get(f"/runs/{evaluation_id}/candidate").raise_for_status().json()
+assert candidate["changed_files"] == ["new.py", "old.py"]
+assert candidate["base"]["new.py"] == "" and candidate["candidate"]["old.py"] == ""
+checks.append("candidate_diff_includes_added_and_deleted_files")
 
 report = {
     "checks": checks,

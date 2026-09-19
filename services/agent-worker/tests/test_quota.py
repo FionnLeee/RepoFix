@@ -17,7 +17,7 @@ class FakeRedis:
         def call(keys, args):
             now, ttl, limit, token = float(args[0]), float(args[1]), int(args[2]), args[3]
             for member, expiry in list(self.slots.items()):
-                if expiry <= now - ttl:
+                if expiry <= now:
                     del self.slots[member]
             if len(self.slots) < limit:
                 self.slots[token] = now + ttl
@@ -51,6 +51,18 @@ def test_crashed_holder_is_reclaimed_after_the_ttl():
     client.slots["crashed-worker-token"] = time.time() - 300  # expired long ago
     assert quota.acquire(timeout=1) >= 0
     assert "crashed-worker-token" not in client.slots
+
+
+def test_slot_expires_at_its_deadline_not_twice_its_ttl(monkeypatch):
+    client = FakeRedis()
+    monkeypatch.setattr(time, "time", lambda: 1000)
+    ModelQuota(client, 1, ttl=120).acquire(timeout=0)
+    monkeypatch.setattr(time, "time", lambda: 1119)
+    with pytest.raises(QuotaTimeout):
+        ModelQuota(client, 1, ttl=120).acquire(timeout=0)
+    monkeypatch.setattr(time, "time", lambda: 1121)
+    ModelQuota(client, 1, ttl=120).acquire(timeout=0)
+    assert len(client.slots) == 1
 
 
 def test_unavailable_redis_is_reported_not_hidden():

@@ -6,6 +6,19 @@
 
 复用 mini-swe-agent 2.4.6（MIT）的 Agent 循环、模型接入与轨迹格式，以 submodule 固定提交 `04d809ceab9df28f9adaed044884180159172930`，保留上游许可证。RepoPilot 在外部新增任务管理、跨语言 Worker 协议、Docker 沙箱适配、独立验收和网页工作台。
 
+## 2026-09-19 审查修正
+
+当前实现与下方历史实验记录的区别：
+
+- SWE-bench 子集按本批次精确 run ID 导出；历史非空补丁不能替代本轮失败。批次使用唯一目录 `runtime/validation/subset-<uuid>/`，保存 manifest、预测、gold 与官方报告；manifest 保留重试链、全部尝试用量及实例/运行/补丁/配置摘要，未知调用数为 null。单独导出需显式传 `scripts/swebench.py export --run-id <id>`，多个实例重复该参数。
+- 官方验收独立于执行状态。SUCCEEDED 表示执行结束；未验收候选显示“待官方验收”。子集评测结束后按实例、run ID、patch SHA-256 导入结果；不同版本、非终态或冲突结果被拒绝，重复导入幂等。`scripts/swebench_subset.py --publish-batch <manifest.json>` 可重试导入，不调用模型。
+- 新建 image 任务不再从 gold 提取允许路径，也不把 `FAIL_TO_PASS` 注入开发命令。snapshot 适配需要显式 allowedPaths。**历史 3/10 来自旧提示配置，不是新配置成绩**；当前尚未重跑真实模型实验。gold 筛选只说明本机暂可评测性，不能推断其他补丁不可能通过。
+- Coder、Reviewer 和 image 模式共用 Redis 配额及请求前预算检查；Redis 失联拒绝新增模型请求，槽位按到期时间回收。review 计数与轨迹立即持久化。`agent.step` 与 `model.call` 分开计时。
+- 无效评审输出记录失败；意见被丢弃或证据截断时显示“不完整”。开发测试改变候选会使评审证据失效。大文件优先提供 diff hunk 附近代码，删除文件支持 base 侧定位，diff 列表包含新增文件。Reviewer 仍无工具；不能据此宣称已证明评审效果提升。
+- strict 是保守的命令审批：仅少量可确认只读的直接命令免审批，脚本、复合 shell 与不确定命令都需批准。auto 仍只是常见写法提示，不是完整权限模型。最终 patch 应用到用户 checkout 的审批尚未实现；现阶段只在私有沙箱生成候选。
+
+历史记录中关于 Redis fail-open、自动选择历史非空补丁和 gold 派生提示的描述已被以上行为替代。
+
 ## 代码归档与回档
 
 私有仓库：[FionnLeee/RepoPilot](https://github.com/FionnLeee/RepoPilot)，默认分支 `main`。克隆时使用 `git clone --recurse-submodules https://github.com/FionnLeee/RepoPilot.git` 获取固定版本的上游依赖。

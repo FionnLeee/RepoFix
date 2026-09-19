@@ -5,6 +5,7 @@ import { DiffEditor, loader } from "@monaco-editor/react";
 export type Finding = {
   file: string;
   line: number;
+  side?: "base" | "candidate";
   severity: string;
   finding: string;
   trigger?: string;
@@ -29,7 +30,7 @@ export function CandidateDiff({ runId, findings, patch }: { runId: string; findi
   const [data, setData] = useState<Candidate | null>(null);
   const [selected, setSelected] = useState<string>();
   const [state, setState] = useState<"loading" | "diff" | "fallback">("loading");
-  const [reveal, setReveal] = useState<{ file: string; line: number }>();
+  const [reveal, setReveal] = useState<{ file: string; line: number; side?: "base" | "candidate" }>();
   const editorRef = useRef<any>(null);
 
   useEffect(() => {
@@ -62,9 +63,10 @@ export function CandidateDiff({ runId, findings, patch }: { runId: string; findi
   const onMount = useCallback(
     (editor: any) => {
       editorRef.current = editor;
-      const modified = editor.getModifiedEditor();
-      modified.createDecorationsCollection(
-        shown.map((finding) => ({
+      for (const side of ["base", "candidate"]) {
+      const pane = side === "base" ? editor.getOriginalEditor() : editor.getModifiedEditor();
+      pane.createDecorationsCollection(
+        shown.filter((finding) => (finding.side || "candidate") === side).map((finding) => ({
           range: { startLineNumber: finding.line, startColumn: 1, endLineNumber: finding.line, endColumn: 1 },
           options: {
             isWholeLine: true,
@@ -74,7 +76,9 @@ export function CandidateDiff({ runId, findings, patch }: { runId: string; findi
           },
         })),
       );
-      if (reveal && (reveal.file === selected || !selected)) modified.revealLineInCenter(reveal.line);
+      if (reveal && (reveal.side || "candidate") === side && (reveal.file === selected || !selected))
+        pane.revealLineInCenter(reveal.line);
+      }
     },
     [shown, reveal, selected],
   );
@@ -122,12 +126,13 @@ export function CandidateDiff({ runId, findings, patch }: { runId: string; findi
         {shown.map((finding, index) => (
           <li key={index} className={`finding finding-${finding.severity}`}>
             <button className="finding-jump" onClick={() => {
-              setReveal({ file: finding.file, line: finding.line });
-              const editor = editorRef.current?.getModifiedEditor();
+              setReveal({ file: finding.file, line: finding.line, side: finding.side });
+              const editor = finding.side === "base" ? editorRef.current?.getOriginalEditor()
+                : editorRef.current?.getModifiedEditor();
               editor?.revealLineInCenter(finding.line);
               editor?.setPosition({ lineNumber: finding.line, column: 1 });
             }}>
-              {finding.file}:{finding.line}
+              {finding.file}:{finding.line}{finding.side === "base" ? "（基准）" : ""}
             </button>
             <span className={`severity severity-${finding.severity}`}>{severityText[finding.severity] ?? finding.severity}</span>
             <p>{finding.finding}</p>

@@ -55,7 +55,7 @@ lonely.acquire(timeout=5)
 assert int(redis.zcard(lonely.key)) == 1
 time.sleep(1.5)
 reclaimed = ModelQuota(quota.client, 1, ttl=1)
-reclaimed.acquire(timeout=5)
+reclaimed.acquire(timeout=0)  # Must already be reclaimable at TTL+0.5, not another TTL later.
 reclaimed.release()
 assert int(redis.zcard(quota.key)) == 0
 

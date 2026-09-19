@@ -6,11 +6,12 @@ import re
 import threading
 import time
 import uuid
+from contextlib import contextmanager
 from pathlib import Path
 
 import docker
 from minisweagent.agents.default import DefaultAgent
-from minisweagent.exceptions import FormatError, InterruptAgentFlow, Submitted
+from minisweagent.exceptions import FormatError, InterruptAgentFlow, LimitsExceeded, Submitted, TimeExceeded
 from minisweagent.models.litellm_textbased_model import LitellmTextbasedModel
 from minisweagent.models.test_models import DeterministicModel, make_output
 
@@ -329,13 +330,51 @@ class TracedAgent(DefaultAgent):
 
     def record_review(self, review):
         """A review is a model call of this run: it shares the coder's budget and history."""
-        self.n_calls += 1
         self.cost += float(review.get("cost") or 0.)
         self.full_messages.append({
             "role": "assistant", "content": review.get("content", ""),
             "extra": {"cost": review.get("cost") or 0., "review_round": review.get("round"),
                       "reviewer": review.get("reviewer"), "review_invalid": review.get("invalid", []),
                       "response": {"usage": review["usage"]} if review.get("usage") else None}})
+
+    def check_model_budget(self):
+        if self.cancelled.is_set():
+            raise Cancelled("任务已取消")
+        error = None
+        if 0 < self.config.step_limit <= self.n_calls or 0 < self.config.cost_limit <= self.cost:
+            error = LimitsExceeded
+        elif 0 < self.config.wall_time_limit_seconds <= time.time() - self._start_time:
+            error = TimeExceeded
+        if error:
+            raise error({"role": "exit", "content": error.__name__,
+                         "extra": {"exit_status": error.__name__, "submission": ""}})
+
+    @contextmanager
+    def model_call(self, role):
+        """Shared admission for coder and reviewer, including checks after quota waiting."""
+        self.check_model_budget()
+        self.acquire_model_slot()
+        wall = None
+        try:
+            self.check_model_budget()
+            wall = time.time()
+            yield
+        finally:
+            if self.quota:
+                self.quota.release()
+            if wall is not None and self.tracing:
+                self.tracing.completed("model.call", wall, time.time(), call=self.n_calls, role=role)
+
+    def perform_review(self, callback):
+        with self.model_call("reviewer"):
+            self.n_calls += 1
+            try:
+                verdict = callback()
+                self.record_review(verdict)
+                return verdict
+            finally:
+                # Persist accounting without creating a resumable checkpoint in the review phase.
+                DefaultAgent.save(self, self.config.output_path)
 
     def save(self, path, *extra_dicts):
         data = super().save(path, *extra_dicts)
@@ -433,7 +472,7 @@ class TracedAgent(DefaultAgent):
             return super().step()
         finally:
             if self.tracing:
-                self.tracing.completed("model.call", wall, time.time(), call=self.n_calls)
+                self.tracing.completed("agent.step", wall, time.time(), call=self.n_calls)
 
     def query(self):
         if self.cancelled.is_set():
@@ -452,27 +491,24 @@ class TracedAgent(DefaultAgent):
             "MODEL_CALL",
             {"call": self.n_calls + 1, "input_characters": sum(len(str(m.get("content", ""))) for m in self.messages)},
         )
-        self.acquire_model_slot()
         try:
-            if prepared is None:
-                return super().query()
-            history = self.messages
-            self.messages = prepared
-            try:
-                response = super().query()
-            finally:
-                self.messages = history
-            # super().query() already archived the response via add_messages().
-            self.messages.append(response)
-            self.context_manager.record_usage(response, self.n_calls)
-            return response
+            with self.model_call("coder"):
+                if prepared is None:
+                    return super().query()
+                history = self.messages
+                self.messages = prepared
+                try:
+                    response = super().query()
+                finally:
+                    self.messages = history
+                # super().query() already archived the response via add_messages().
+                self.messages.append(response)
+                self.context_manager.record_usage(response, self.n_calls)
+                return response
         except InterruptAgentFlow:
             # Format/limit errors have not executed a tool; the upstream loop records them before save().
             self._checkpoint_safe = True
             raise
-        finally:
-            if self.quota:
-                self.quota.release()
 
     def acquire_model_slot(self):
         """Hold one shared model-call slot for this call; record rather than hide a fallback."""
@@ -481,11 +517,9 @@ class TracedAgent(DefaultAgent):
         try:
             waited = self.quota.acquire()
         except QuotaUnavailable as error:
-            if not self._quota_fallback:
-                self._quota_fallback = True
-                self.emit("QUOTA_FALLBACK", {"reason": str(error)[:300], "limit": self.quota.limit,
-                                             "effect": "Redis 不可用，本次及后续调用不共享并发配额"})
-            return 0.0
+            self.emit("QUOTA_UNAVAILABLE", {"reason": str(error)[:300], "limit": self.quota.limit,
+                                             "effect": "Redis 不可用，拒绝新增模型请求"})
+            raise RuntimeError("共享模型配额不可用，未发出模型请求") from error
         except QuotaTimeout as error:
             raise RuntimeError(f"共享模型配额等待超时：{error}") from error
         if waited >= 0.25:

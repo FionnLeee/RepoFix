@@ -201,10 +201,10 @@ def image_candidate(sandbox, workspace):
         text = blob.output.decode("utf-8", errors="replace")
         if len(text.encode()) <= 100000:
             candidate[name] = text
-    return candidate, [name for name in names if name in candidate], patch
+    return candidate, names, patch
 
 
-def review_before_acceptance(agent, run, spec, sandbox, snapshot, tracing, emit, instruction):
+def review_before_acceptance(agent, run, spec, sandbox, snapshot, tracing, emit, instruction, source=None):
     """One review per candidate before acceptance, with a bounded number of revisions.
 
     ``snapshot`` returns ``(candidate, changed, patch)``: the candidate as text, the paths it
@@ -214,7 +214,7 @@ def review_before_acceptance(agent, run, spec, sandbox, snapshot, tracing, emit,
     reviews, reviewed_sha, unresolved = [], None, 0
     while True:
         candidate, changed, patch = snapshot()
-        candidate_sha = digest(candidate)
+        candidate_sha = hashlib.sha256(patch.encode()).hexdigest()
         if reviewed_sha is not None and reviewed_sha != candidate_sha:
             emit("REVIEW_INVALIDATED", {"reviewed_sha256": reviewed_sha, "candidate_sha256": candidate_sha,
                                         "reason": "修订后的候选版本已变化，原评审不再对应当前版本。"})
@@ -227,8 +227,14 @@ def review_before_acceptance(agent, run, spec, sandbox, snapshot, tracing, emit,
         wall = time.time()
         try:
             evidence = sandbox.execute({"command": spec.testCommand})["output"]
-            verdict = review.perform(review.reviewer_for(run, {}, candidate, changed, agent.review_rounds),
-                                     run, spec, candidate, changed, patch, evidence, agent.review_rounds)
+            tested_candidate, tested_changed, tested_patch = snapshot()
+            if tested_patch != patch:
+                candidate, changed, patch = tested_candidate, tested_changed, tested_patch
+                candidate_sha = hashlib.sha256(patch.encode()).hexdigest()
+                raise ValueError("开发测试改变了候选文件，测试证据已失效；本轮评审未调用模型")
+            verdict = agent.perform_review(lambda: review.perform(
+                review.reviewer_for(run, {}, candidate, changed, agent.review_rounds),
+                run, spec, candidate, changed, patch, evidence, agent.review_rounds, base=source))
         except (Cancelled, ApprovalPaused):
             raise
         except Exception as error:
@@ -242,13 +248,18 @@ def review_before_acceptance(agent, run, spec, sandbox, snapshot, tracing, emit,
         if tracing:
             tracing.completed("review", wall, time.time(), round=agent.review_rounds + 1,
                               findings=len(verdict["findings"]), invalid=verdict["invalid_count"])
-        agent.record_review(verdict)
-        review_record = {"round": verdict["round"] + 1, "status": "ok", "candidate_sha256": candidate_sha,
+        failed = bool(verdict["parse_error"])
+        partial = bool(verdict["invalid"] or verdict.get("partial"))
+        review_record = {"round": verdict["round"] + 1,
+                         "status": "failed" if failed else "partial" if partial else "ok",
+                         "error": verdict["parse_error"], "candidate_sha256": candidate_sha,
                          "reviewer": verdict["reviewer"], "summary": verdict["summary"],
                          "findings": verdict["findings"], "invalid": verdict["invalid"], "parse_error": verdict["parse_error"],
                          "cost_usd": verdict["cost"]}
         reviews.append(review_record)
-        emit("REVIEW_COMPLETED", {"round": review_record["round"], "candidate_sha256": candidate_sha,
+        emit("REVIEW_FAILED" if failed else "REVIEW_COMPLETED", {
+                                  "round": review_record["round"], "candidate_sha256": candidate_sha,
+                                  "status": review_record["status"], "error": verdict["parse_error"],
                                   "reviewer": verdict["reviewer"], "summary": verdict["summary"],
                                   "findings": verdict["findings"], "invalid": verdict["invalid"],
                                   "invalid_count": verdict["invalid_count"], "parse_error": verdict["parse_error"]})
@@ -299,6 +310,7 @@ def execute_image_repository_run(run, spec, emit, cancelled, control=None, quota
         "task_sha256": hashlib.sha256(run["task"].encode()).hexdigest(),
         "context_mode": "full", "runner_version": "repository-v2-image",
         "approval_policy": "off", "review_policy": review.policy(run), "recovered_from": None,
+        "model": os.getenv("MODEL_NAME") if run["mode"] == "live" else "deterministic",
     }
     try:
         emit("REPOSITORY_READY", provenance)
@@ -309,7 +321,7 @@ def execute_image_repository_run(run, spec, emit, cancelled, control=None, quota
         # The images carry the base commit only, so history searches cost steps and find nothing.
         system += ("The checkout carries the base commit only: read the code and the report, then"
                    " change as little as possible and check it with the development test command.")
-        system = SYSTEM.replace("Only pricing.py is accepted as the final source patch. Tests are independently verified.",
+        system = system.replace("Only pricing.py is accepted as the final source patch. Tests are independently verified.",
                                 "The whole repository may be changed. The official harness judges the result with"
                                 " the instance's own tests after you submit.")
         if run["mode"] == "demo":
@@ -333,6 +345,7 @@ def execute_image_repository_run(run, spec, emit, cancelled, control=None, quota
                             step_limit=step_limit, cost_limit=0, wall_time_limit_seconds=WALL_TIME_SECONDS,
                             output_path=folder / "trajectory.json")
         agent.tracing = tracing
+        agent.enable_quota(quota)
         instruction = run["task"] + "\nDevelopment test command: " + spec.testCommand
         outcome = agent.run(instruction)
         if outcome.get("exit_status") != "Submitted":
@@ -470,7 +483,7 @@ def execute_repository_run(run, emit, cancelled, control=None, quota=None, traci
 
         replayed_tree = {}
         reviews, unresolved, candidate, changed, patch = review_before_acceptance(
-            agent, run, spec, sandbox, snapshot, tracing, emit, instruction)
+            agent, run, spec, sandbox, snapshot, tracing, emit, instruction, source=source)
         # The patch of the last snapshot is the candidate both branches record.
         replayed = replayed_tree["replayed"]
         emit("CANDIDATE", {"patch": patch, "changed_files": changed}, "VERIFYING")

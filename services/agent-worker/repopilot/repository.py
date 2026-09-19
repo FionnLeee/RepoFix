@@ -49,7 +49,7 @@ class RepositoryTask(BaseModel):
     source: str = Field(max_length=200)
     commit: str = Field(pattern=r"^[0-9a-f]{40}$")
     subdir: str = Field(default="", max_length=200)
-    allowedPaths: list[str] = Field(min_length=1, max_length=30)
+    allowedPaths: list[str] = Field(max_length=30)
     instanceId: str | None = Field(default=None, max_length=120)
     verificationMode: Literal["tests", "harness"] = "tests"
     verificationFiles: dict[str, str] = Field(default_factory=dict)
@@ -73,6 +73,8 @@ class RepositoryTask(BaseModel):
     @model_validator(mode="after")
     def workspace_shape(self):
         """An image workspace is the image's own repository: no snapshot to bound or restore."""
+        if self.workspaceMode == "snapshot" and not self.allowedPaths:
+            raise ValueError("A snapshot workspace requires explicit allowed paths")
         if self.workspaceMode == "image":
             if not self.sandboxImage:
                 raise ValueError("An image workspace needs the image that carries the repository")

@@ -9,10 +9,12 @@ read, and the harness report is summarised for the run record. Runs translated h
 commit, and the harness owns the verdict.
 """
 
+import hashlib
 import json
 import re
 
 HARNESS = "swebench"
+TERMINAL = {"SUCCEEDED", "FAILED", "CANCELLED", "INTERRUPTED"}
 DIFF_HEADER = re.compile(r"^diff --git a/(\S+) b/(\S+)$", re.MULTILINE)
 
 
@@ -30,10 +32,8 @@ def failing_tests(instance):
 
 
 def default_test_command(instance):
-    """A development command for the coder: the instance's own failing tests, when known."""
-    tests = failing_tests(instance)
-    files = sorted({test.split("::")[0] for test in tests if test.split("::")[0].endswith(".py")})
-    return "python -m pytest -q " + " ".join(files[:5]) if files else "python -m pytest -q"
+    """Public baseline command; evaluator test identities never enter agent context."""
+    return "python -m pytest -q"
 
 
 # SWE-bench images keep the pinned interpreter in a conda env that the official evaluation
@@ -43,10 +43,8 @@ CONDA_PREFIX = "bash -lc 'source /opt/miniconda3/bin/activate && conda activate 
 
 
 def image_test_command(instance, limit=3):
-    """The development command to use inside an instance image: its own failing tests."""
-    tests = [test for test in failing_tests(instance) if " " not in test][:limit]
-    command = "python -m pytest -q " + " ".join(tests) if tests else "python -m pytest -q"
-    return CONDA_PREFIX.format(command=command)
+    """Activate the pinned environment without exposing hidden test identifiers."""
+    return CONDA_PREFIX.format(command=default_test_command(instance))
 
 
 def task_from_instance(instance, allowed_paths=None, subdir="", context_mode="full", review_policy="auto",
@@ -55,13 +53,12 @@ def task_from_instance(instance, allowed_paths=None, subdir="", context_mode="fu
 
     The default workspace mode is ``image``: an instance image already carries its checkout and
     its pinned environment, and RepoPilot's bounded snapshot (200 text files, 100 KB each) does
-    not fit a real repository. ``allowedPaths`` defaults to the files the instance's own patch
-    touches — a wider hint than a task statement normally gives, so runs translated this way are
-    not comparable with leaderboard numbers; pass an explicit list to narrow it.
+    not fit a real repository. Image tasks have no path hints by default; snapshot tasks need
+    explicit allowed_paths independent of the gold patch. Hidden test identities are not sent.
     """
-    paths = allowed_paths or changed_files(instance.get("patch", ""))
-    if not paths:
-        raise ValueError("Instance has no patch to bound the allowed paths; pass allowed_paths")
+    paths = list(allowed_paths or [])
+    if not paths and workspace_mode != "image":
+        raise ValueError("A snapshot task needs explicit allowed_paths independent of the gold patch")
     if not instance.get("base_commit") or not instance.get("problem_statement"):
         raise ValueError("Instance needs base_commit and problem_statement")
     if workspace_mode == "image" and not instance.get("image"):
@@ -103,25 +100,41 @@ def export_predictions(runs, model_name):
     that as an empty submission, not as a missing entry, so the denominator stays honest and the
     harness decides. Runs that are not instance runs at all are simply not part of the sample.
     """
-    rows, skipped = [], []
+    rows, skipped, seen = [], [], set()
     for run in runs:
         instance = (run.get("spec") or {}).get("instanceId")
         if not instance:
             continue
+        if run.get("status") not in TERMINAL:
+            raise ValueError(f"Run {run['id']} is not terminal")
+        if instance in seen:
+            raise ValueError(f"Multiple runs for {instance}; select explicit run IDs from one batch")
+        seen.add(instance)
         patch = (run.get("result") or {}).get("patch") or ""
         if not patch:
             reason = ("no patch was produced" if run.get("status") == "SUCCEEDED"
                       else f"status {run.get('status')}")
             skipped.append({"run_id": run["id"], "instance_id": instance, "reason": reason})
         rows.append(prediction(run, model_name))
-    seen = {}
-    for row in rows:
-        # One prediction per instance: the newest attempt that produced a patch wins, and an
-        # empty submission is only used when no attempt produced anything.
-        current = seen.get(row["instance_id"])
-        if current is None or (not current["model_patch"] and row["model_patch"]):
-            seen[row["instance_id"]] = row
-    return list(seen.values()), skipped
+    return rows, skipped
+
+
+def batch_predictions(run_ids, fetch, model_name="repopilot"):
+    """Export only explicitly selected attempts, never the paginated global run list."""
+    runs, manifest = [], []
+    for instance_id, run_id in run_ids.items():
+        run = fetch(f"/runs/{run_id}")
+        if run.get("id") != run_id or (run.get("spec") or {}).get("instanceId") != instance_id:
+            raise ValueError(f"Instance/run binding mismatch: {instance_id}/{run_id}")
+        runs.append(run)
+        patch = (run.get("result") or {}).get("patch") or ""
+        config = {key: run.get(key) for key in ("task", "spec", "mode", "contextMode", "reviewPolicy", "reviewRounds")}
+        config["provenance"] = (run.get("result") or {}).get("provenance")
+        manifest.append({"instance_id": instance_id, "run_id": run_id,
+                         "patch_sha256": hashlib.sha256(patch.encode()).hexdigest(),
+                         "config_sha256": hashlib.sha256(json.dumps(config, sort_keys=True).encode()).hexdigest()})
+    rows, skipped = export_predictions(runs, model_name)
+    return rows, skipped, manifest
 
 
 def summarise_report(report):

@@ -1,5 +1,5 @@
 import "reflect-metadata";
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import {
@@ -65,7 +65,7 @@ class RepositorySpec {
   @MaxLength(200) source!: string;
   @Matches(/^[0-9a-f]{40}$/) commit!: string;
   @IsOptional() @IsString() @MaxLength(200) subdir?: string;
-  @IsArray() @ArrayMinSize(1) @ArrayMaxSize(30) @ArrayUnique()
+  @IsArray() @ArrayMaxSize(30) @ArrayUnique()
   @IsString({ each: true }) @MaxLength(240, { each: true }) @Matches(pathPattern, { each: true })
   allowedPaths!: string[];
   @IsOptional() @IsString() @MaxLength(120) instanceId?: string;
@@ -126,6 +126,12 @@ class ApprovalRequest extends Ownership {
 class Decision {
   @IsIn(["approve", "reject"]) decision!: string;
   @IsOptional() @IsString() @MaxLength(1000) note?: string;
+}
+class EvaluationResult {
+  @IsString() @MinLength(1) @MaxLength(120) instanceId!: string;
+  @Matches(/^[0-9a-f]{64}$/) patchSha256!: string;
+  @IsIn(["resolved", "unresolved", "infra_failed"]) status!: string;
+  @Matches(/^[a-zA-Z0-9_-]{1,100}$/) batchId!: string;
 }
 
 @Injectable()
@@ -374,6 +380,8 @@ class Api {
     const spec = rawSpec ? { ...rawSpec, subdir: rawSpec.subdir || "", testCommand: rawSpec.testCommand || "python -m unittest discover -v" } : null;
     const task = baseline?.task || body.task || TASK;
     const imageWorkspace = spec?.workspaceMode === "image";
+    if (spec && !imageWorkspace && !spec.allowedPaths.length)
+      throw new BadRequestException("快照工作区需要明确的允许路径");
     const contextMode = imageWorkspace ? "full" : body.contextMode || (spec ? "managed" : "full");
     const memoryEnabled = !!spec && !imageWorkspace && contextMode === "managed" && (body.memoryEnabled ?? !body.baselineId);
     const approvalPolicy = body.approvalPolicy || "auto";
@@ -452,6 +460,33 @@ class Api {
     });
     if (!run) throw new NotFoundException();
     return run;
+  }
+  @Post("runs/:id/evaluation") async importEvaluation(@Param("id") id: string, @Body() body: EvaluationResult) {
+    // This is the same local, single-user trust boundary as task creation and approval.
+    // The importer supplies the official verdict; the API binds it to an immutable attempt.
+    return this.db.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM "Run" WHERE id = ${id} FOR UPDATE`;
+      const run = await tx.run.findUnique({ where: { id } });
+      if (!run) throw new NotFoundException();
+      const spec = run.spec as any;
+      const result = run.result as any;
+      if (!terminal.includes(run.status) || spec?.verificationMode !== "harness" ||
+          spec.instanceId !== body.instanceId)
+        throw new ConflictException("验收结果必须绑定已结束的同实例 harness 任务");
+      const hash = createHash("sha256").update(result?.patch || "", "utf8").digest("hex");
+      if (hash !== body.patchSha256) throw new ConflictException("补丁版本与验收报告不一致");
+      if (body.status === "resolved" && !result?.patch)
+        throw new BadRequestException("空补丁不能导入为 resolved");
+      const evaluation = { status: body.status, instanceId: body.instanceId,
+        patchSha256: body.patchSha256, batchId: body.batchId, harness: "swebench" };
+      if (run.evaluation) {
+        if (canonical(run.evaluation) === canonical(evaluation)) return run;
+        throw new ConflictException("该运行已有不同的验收记录，请使用新的运行记录复评");
+      }
+      await tx.event.create({ data: { runId: id, key: "evaluation-imported", type: "EVALUATION_IMPORTED",
+        data: evaluation } });
+      return tx.run.update({ where: { id }, data: { evaluation } });
+    });
   }
   @Get("runs/:id/checkpoints") async checkpoints(@Param("id") id: string) {
     if (!(await this.db.run.findUnique({ where: { id } }))) throw new NotFoundException();
@@ -679,7 +714,7 @@ class Api {
     const source = readTree("source.json");
     const candidate = readTree("candidate.json");
     if (!source || !candidate) throw new NotFoundException("该任务没有可对比的候选快照");
-    const changed = Object.keys(source)
+    const changed = [...new Set([...Object.keys(source), ...Object.keys(candidate)])]
       .filter((name) => source[name] !== candidate[name])
       .sort();
     const base: Record<string, string> = {};

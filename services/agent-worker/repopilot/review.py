@@ -37,7 +37,9 @@ Answer with one fenced json block and nothing else:
  "finding": "what is wrong", "trigger": "the call or input that shows it",
  "evidence": "the line or test result that supports it", "suggestion": "the smallest fix"}]}
 ```
-`file` must be one of the candidate files and `line` an existing line in it. `severity` is
+`file` must be one of the supplied files and `line` an existing line in it. For a deleted
+file use `"side": "base"` and a line in its supplied base source; otherwise use candidate.
+`severity` is
 blocking (wrong result, crash, regression, unmet requirement), major (fragile or uncovered),
 or minor (naming, style). Use `"findings": []` when nothing is worth reporting: an empty
 review is a valid and common answer."""
@@ -62,32 +64,58 @@ def max_rounds(run):
     return value if type(value) is int and 0 <= value <= 5 else DEFAULT_MAX_ROUNDS
 
 
-def _numbered(name, text, limit=MAX_FILE):
-    lines = text.split("\n")[:400]
-    rendered = [f"{index:>4} | {line}" for index, line in enumerate(lines, start=1)]
+def _numbered(name, text, limit=MAX_FILE, patch=""):
+    lines = text.split("\n")
+    selected = set()
+    section = False
+    for line in patch.splitlines():
+        if line.startswith("diff --git "):
+            section = line.endswith(f" b/{name}")
+        match = re.match(r"@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@", line) if section else None
+        if match:
+            start, count = int(match[1]), int(match[2] or 1)
+            selected.update(range(max(1, start - 5), min(len(lines), start + count + 5) + 1))
+    indices = sorted(selected) if selected else range(1, len(lines) + 1)
+    rendered = [f"{index:>4} | {lines[index - 1]}" for index in indices]
     body = "\n".join(rendered)
-    return body[:limit] + ("\n[... truncated ...]" if len(body) > limit else "")
+    return body[:limit] + ("\n[... truncated ...]" if len(body) > limit or len(rendered) < len(lines) else "")
 
 
-def request(run, spec, candidate, changed, patch, evidence):
+def request(run, spec, candidate, changed, patch, evidence, base=None, with_coverage=False):
     """The reviewer's own message list: nothing of the coder's history is carried over."""
     parts = [f"Task: {run['task']}", f"Allowed paths: {', '.join(spec.allowedPaths)}",
              f"Development test command: {spec.testCommand}"]
+    # Keep test evidence before optional source excerpts so the request budget cannot erase it.
+    parts.append("Development test output on this candidate:\n```\n" + evidence[:3000] + "\n```")
     parts.append("Candidate diff:\n```diff\n" + patch[:MAX_PATCH] + "\n```")
     for name in sorted(changed):
-        parts.append(f"Candidate file {name}:\n```python\n{_numbered(name, candidate[name])}\n```")
-    parts.append("Development test output on this candidate:\n```\n" + evidence[:3000] + "\n```")
-    body = "\n\n".join(parts)[:MAX_USER]
-    return [{"role": "system", "content": SYSTEM}, {"role": "user", "content": body}]
+        if name not in candidate:
+            if name in (base or {}):
+                parts.append(f"Deleted file {name}, base side:\n```python\n{_numbered(name, base[name])}\n```")
+            else:
+                parts.append(f"File {name}: deleted or omitted from source preview; inspect its diff.")
+            continue
+        parts.append(f"Candidate file {name}:\n```python\n{_numbered(name, candidate[name], patch=patch)}\n```")
+    full_body = "\n\n".join(parts)
+    partial = (len(patch) > MAX_PATCH or len(evidence) > 3000 or len(full_body) > MAX_USER or
+               "[... truncated ...]" in full_body or any(name not in candidate and name not in (base or {})
+                                                        for name in changed))
+    messages = [{"role": "system", "content": SYSTEM}, {"role": "user", "content": full_body[:MAX_USER]}]
+    return (messages, partial) if with_coverage else messages
 
 
 def _text(value, limit=MAX_FIELD):
     return value.strip()[:limit] if isinstance(value, str) else ""
 
 
-def _position_error(item, candidate):
+def _position_error(item, candidate, base=None):
     """Why a finding does not name a real position in the candidate, or None when it does."""
     name = item.get("file")
+    side = item.get("side", "candidate")
+    if side not in ("candidate", "base"):
+        return "side must be candidate or base"
+    if side == "base":
+        candidate = base or {}
     if not isinstance(name, str) or name not in candidate:
         return f"file {name!r} is not a candidate file"
     line = item.get("line")
@@ -96,7 +124,7 @@ def _position_error(item, candidate):
     return None
 
 
-def parse(text, candidate):
+def parse(text, candidate, base=None):
     """Validate a review answer; unusable findings are dropped and counted, never trusted."""
     result = {"summary": "", "findings": [], "invalid": [], "parse_error": None}
     match = BLOCK.search(text or "") or re.search(r"(\{.*\})", text or "", re.DOTALL)
@@ -113,8 +141,6 @@ def parse(text, candidate):
         return result
     result["summary"] = _text(payload.get("summary"))
     raw = payload.get("findings")
-    if raw is None:
-        raw = []
     if not isinstance(raw, list):
         result["parse_error"] = "findings is not a list"
         return result
@@ -122,7 +148,7 @@ def parse(text, candidate):
         if not isinstance(item, dict):
             result["invalid"].append({"reason": "finding is not an object", "raw": str(item)[:120]})
             continue
-        name, error = item.get("file"), _position_error(item, candidate)
+        name, error = item.get("file"), _position_error(item, candidate, base)
         severity = item.get("severity")
         if error is None and severity not in SEVERITIES:
             error = f"severity {severity!r} is not one of {', '.join(SEVERITIES)}"
@@ -134,7 +160,8 @@ def parse(text, candidate):
         if len(result["findings"]) >= MAX_FINDINGS:
             result["invalid"].append({"reason": f"more than {MAX_FINDINGS} findings", "raw": name})
             continue
-        result["findings"].append({"file": name, "line": item["line"], "severity": severity,
+        result["findings"].append({"file": name, "line": item["line"], "side": item.get("side", "candidate"),
+                                   "severity": severity,
                                    "finding": _text(item.get("finding")), "trigger": _text(item.get("trigger")),
                                    "evidence": _text(item.get("evidence")), "suggestion": _text(item.get("suggestion"))})
     return result
@@ -217,7 +244,8 @@ def render_for_coder(findings):
     """The feedback the coder receives: the reviewer's own words, nothing else."""
     lines = ["Review of your last submitted candidate found problems that must be handled.",
              "You are still in the same workspace; fix them and submit again.",
-             "Do not argue with the review in prose; change the candidate."]
+             "Fix supported findings. If a finding is a false positive, use tools to demonstrate concrete"
+             " test/code evidence and resubmit; do not change correct code just to satisfy the reviewer."]
     for finding in findings:
         lines.append(f"- [{finding['severity']}] {finding['file']}:{finding['line']} {finding['finding']}"
                      + (f" Trigger: {finding['trigger']}" if finding["trigger"] else "")
@@ -225,10 +253,13 @@ def render_for_coder(findings):
     return "\n".join(lines)
 
 
-def perform(reviewer, run, spec, candidate, changed, patch, evidence, round_index):
+def perform(reviewer, run, spec, candidate, changed, patch, evidence, round_index, base=None):
     """Ask for one review and return it with the position validation already applied."""
-    answer = reviewer.complete(request(run, spec, candidate, changed, patch, evidence))
-    parsed = parse(answer["content"], candidate)
+    messages, partial = request(run, spec, candidate, changed, patch, evidence, base, with_coverage=True)
+    answer = reviewer.complete(messages)
+    parsed = parse(answer["content"], candidate, base)
+    # Coverage describes evidence supplied, not a claim that the reviewer understood every line.
+    parsed["partial"] = partial
     parsed.update(round=round_index, reviewer=answer.get("reviewer"), cost=answer.get("cost") or 0.,
                   usage=answer.get("usage"), content=answer["content"],
                   blocking_count=len(blocking(parsed["findings"])), invalid_count=len(parsed["invalid"]))

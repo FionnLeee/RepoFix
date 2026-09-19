@@ -1,0 +1,1 @@
+ALTER TABLE "Run" ADD COLUMN "evaluation" JSONB;

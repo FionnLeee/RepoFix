@@ -12,7 +12,9 @@ are reported rather than hidden: write forms such as ``python -c "open(...,'w')"
 be resolved to paths, and a quoted redirection target is not resolved either.
 """
 
+import posixpath
 import re
+import shlex
 from pathlib import PurePosixPath
 
 WORKSPACE = "/workspace"
@@ -37,7 +39,7 @@ def _shell_view(command):
     placed after the terminator would never be seen. An unterminated heredoc leaves the
     rest of the command inside its body, which is the conservative reading.
     """
-    view, quote, pending = [], None, None
+    view, quote, pending, target_quote = [], None, None, False
     for line in command.split("\n"):
         if pending is not None:
             pending = None if line.strip() == pending else pending
@@ -45,9 +47,12 @@ def _shell_view(command):
         blanked, opener = [], None
         for index, char in enumerate(line):
             if quote:
+                keep = target_quote and char != quote
                 quote = None if char == quote else quote
-                blanked.append(" ")
+                blanked.append(char if keep else " ")
             elif char in "'\"":
+                target_quote = bool(re.search(r">\s*$", "".join(blanked)) and
+                                    re.match(r"['\"][A-Za-z0-9_./-]+['\"]", line[index:]))
                 quote = char
                 blanked.append(" ")
             elif opener is None and line.startswith("<<", index):
@@ -77,6 +82,7 @@ def _resolve(raw, cwd=WORKSPACE):
     path = PurePosixPath(value)
     if not path.is_absolute():
         path = PurePosixPath(cwd) / path
+    path = PurePosixPath(posixpath.normpath(str(path)))
     if str(path) == "/tmp" or str(path).startswith(("/tmp/", "/dev/")):
         return None  # ephemeral inside the sandbox, discarded with the container
     try:
@@ -141,6 +147,18 @@ def evaluate(command, allowed_paths, policy="auto"):
         if PYTHON_WRITE.search(command):
             return {"requires_approval": True, "policy": policy, "targets": targets,
                     "reason": "已启用严格审批：该动作包含 Python 写文件调用，无法从命令中解析具体路径。"}
+        # Arbitrary shell is not statically provable as read-only. Only a small direct-command
+        # allowlist is exempt; scripts, shell composition and substitutions require approval.
+        try:
+            words = shlex.split(command)
+        except ValueError:
+            words = []
+        readonly = (bool(words) and words[0] in {"cat", "head", "tail", "wc", "pwd", "ls", "echo"}
+                    and not any(char in command for char in "\n;|&<>`$()")
+                    and not any(word.startswith("--output") for word in words))
+        if not readonly:
+            return {"requires_approval": True, "policy": policy, "targets": targets,
+                    "reason": "已启用严格审批：无法证明该命令只读，执行前需要确认。"}
     if policy == "auto" and outside:
         return {"requires_approval": True, "policy": policy, "targets": targets,
                 "reason": "该动作写入允许范围之外的位置（" + ", ".join(outside) + "）。"}

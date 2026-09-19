@@ -13,7 +13,7 @@ import uuid
 # Clean expired slots, then admit only below the limit. Races between workers are decided
 # by the script's atomicity, not by a client-side check-then-set sequence.
 TRY_ACQUIRE = """
-redis.call('ZREMRANGEBYSCORE', KEYS[1], '-inf', ARGV[1] - tonumber(ARGV[2]))
+redis.call('ZREMRANGEBYSCORE', KEYS[1], '-inf', ARGV[1])
 if redis.call('ZCARD', KEYS[1]) < tonumber(ARGV[3]) then
   redis.call('ZADD', KEYS[1], tonumber(ARGV[1]) + tonumber(ARGV[2]), ARGV[4])
   return 1
