@@ -105,6 +105,16 @@ def test_batch_export_never_uses_history_or_paginated_listing():
         swebench.batch_predictions(ids, fetch)
 
 
+def test_failed_attempt_config_hash_distinguishes_shared_and_extra_budget():
+    attempt = {**run("current", status="FAILED", patch=""), "reviewBudget": "shared"}
+    ids = {"django__django-11099": "current"}
+    first = swebench.batch_predictions(ids, lambda _: attempt)[2][0]
+    attempt["reviewBudget"] = "extra"
+    second = swebench.batch_predictions(ids, lambda _: attempt)[2][0]
+    assert first["patch_sha256"] == second["patch_sha256"]
+    assert first["config_sha256"] != second["config_sha256"]
+
+
 def test_agent_payload_does_not_depend_on_gold_or_hidden_test_metadata():
     altered = {**INSTANCE, "patch": "SECRET_GOLD", "test_patch": "SECRET_TEST",
                "FAIL_TO_PASS": ["SECRET_FAIL"], "PASS_TO_PASS": ["SECRET_PASS"]}

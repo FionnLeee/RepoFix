@@ -9,9 +9,9 @@ from pathlib import Path
 
 from minisweagent.models.test_models import DeterministicModel, make_output
 
-from repopilot import recovery, review
+from repopilot import image_workspace, recovery, review
 from repopilot.reporting import usage_summary
-from repopilot.repository import RepositoryTask, digest, load_snapshot, safe_path, validate_files
+from repopilot.repository import RepositoryTask, digest, load_snapshot, validate_files
 from repopilot.runtime import SYSTEM, ApprovalPaused, Cancelled, SafeModel, Sandbox, TracedAgent
 
 # Runs in the container with isolated Python, and refuses links at every traversed directory.
@@ -63,6 +63,8 @@ sys.exit(0 if result.wasSuccessful() and result.testsRun and not result.skipped 
 
 
 def read_tree(sandbox, quiescent=False):
+    if hasattr(sandbox, "checkpoint_reader"):
+        return sandbox.checkpoint_reader(quiescent)
     guard = """
 import os
 ancestors = {1}
@@ -165,43 +167,17 @@ STEP_LIMIT = 20
 IMAGE_STEP_LIMIT = 60
 REVISION_STEPS = 5
 WALL_TIME_SECONDS = 900
-IMAGE_MEMORY = os.getenv("IMAGE_WORKSPACE_MEMORY", "2g")
 
 
-def image_candidate(sandbox, workspace):
-    """Candidate of an image workspace: the repository's own staged diff, read back as text.
+def step_budget(run, base):
+    """The attempt's step limit: review adds revision steps unless the run shares one budget.
 
-    ``core.fileMode=false`` matches what the official harness does when it applies a patch, so
-    a permission bit that a step happened to change is not reported as a code change.
+    ``reviewBudget = "shared"`` keeps the coder's limit unchanged with review on, so a
+    review-on/off comparison measures the review and not extra steps.
     """
-    def git(*args):
-        return sandbox.container.exec_run(
-            ["git", "-c", "core.fileMode=false", "-c", "core.autocrlf=false", "-c", "safe.directory=" + workspace,
-             "-C", workspace, *args], user=sandbox.user)
-
-    staged = git("add", "-A", "--", ".")
-    if staged.exit_code:
-        output = staged.output.decode(errors="replace")
-        if "index.lock" in output:
-            # A step whose command the sandbox killed can leave the lock behind; the workspace is
-            # a disposable container, so clearing it and staging again is safe.
-            sandbox.container.exec_run(["rm", "-f", ".git/index.lock"], workdir=workspace, user=sandbox.user)
-            staged = git("add", "-A", "--", ".")
-            output = staged.output.decode(errors="replace")
-        if staged.exit_code:
-            raise RuntimeError(f"Cannot stage the repository inside the image workspace: {output[-300:]}")
-    patch = git("diff", "--cached", "--no-ext-diff", "--no-textconv", "HEAD").output.decode(errors="replace")
-    names = git("diff", "--cached", "--name-only", "HEAD").output.decode(errors="replace").split()
-    candidate = {}
-    for name in names[:60]:
-        safe_path(name)
-        blob = git("show", f":{name}")
-        if blob.exit_code:
-            continue  # a deletion has no content to show
-        text = blob.output.decode("utf-8", errors="replace")
-        if len(text.encode()) <= 100000:
-            candidate[name] = text
-    return candidate, names, patch
+    extra = REVISION_STEPS * review.max_rounds(run) if review.enabled(run) and run.get("reviewBudget", "extra") != "shared" else 0
+    return base + extra
+IMAGE_MEMORY = os.getenv("IMAGE_WORKSPACE_MEMORY", "2g")
 
 
 def review_before_acceptance(agent, run, spec, sandbox, snapshot, tracing, emit, instruction, source=None):
@@ -211,15 +187,30 @@ def review_before_acceptance(agent, run, spec, sandbox, snapshot, tracing, emit,
     touches, and its patch. A review that cannot be produced is reported rather than being
     treated as a clean candidate.
     """
-    reviews, reviewed_sha, unresolved = [], None, 0
+    reviews, reviewed_sha, unresolved, dispositions, previous = [], None, 0, [], []
+
+    def settle(reviewer_previous=None):
+        """Close the open findings of the last round; without a reviewer verdict they stay unverified."""
+        if previous:
+            records = review.dispositions(previous, reviewer_previous)
+            dispositions.extend(records)
+            emit("REVIEW_DISPOSITIONS", {"review_round": previous[0]["review_round"], "records": records})
+            previous.clear()
+            return records
+        return []
+
+    def done():
+        settle()
+        return reviews, unresolved, dispositions, candidate, changed, patch
+
     while True:
         candidate, changed, patch = snapshot()
         candidate_sha = hashlib.sha256(patch.encode()).hexdigest()
         if reviewed_sha is not None and reviewed_sha != candidate_sha:
             emit("REVIEW_INVALIDATED", {"reviewed_sha256": reviewed_sha, "candidate_sha256": candidate_sha,
                                         "reason": "修订后的候选版本已变化，原评审不再对应当前版本。"})
-        if not review.enabled(run) or agent.review_rounds > review.max_rounds(run) or reviewed_sha == candidate_sha:
-            return reviews, unresolved, candidate, changed, patch
+        if not review.enabled(run) or agent.review_rounds > review.max_rounds(run) or (reviewed_sha == candidate_sha and not previous):
+            return done()
         reviewed_sha = candidate_sha
         emit("REVIEW_REQUESTED", {"round": agent.review_rounds + 1, "reviewer": "read-only",
                                   "candidate_sha256": candidate_sha, "changed_files": changed,
@@ -234,7 +225,8 @@ def review_before_acceptance(agent, run, spec, sandbox, snapshot, tracing, emit,
                 raise ValueError("开发测试改变了候选文件，测试证据已失效；本轮评审未调用模型")
             verdict = agent.perform_review(lambda: review.perform(
                 review.reviewer_for(run, {}, candidate, changed, agent.review_rounds),
-                run, spec, candidate, changed, patch, evidence, agent.review_rounds, base=source))
+                run, spec, candidate, changed, patch, evidence, agent.review_rounds, base=source,
+                previous=previous or None))
         except (Cancelled, ApprovalPaused):
             raise
         except Exception as error:
@@ -244,7 +236,7 @@ def review_before_acceptance(agent, run, spec, sandbox, snapshot, tracing, emit,
                                    "error": str(error)[:300]})
             reviews.append({"round": agent.review_rounds + 1, "status": "failed", "candidate_sha256": candidate_sha,
                             "error": str(error)[:300]})
-            return reviews, unresolved, candidate, changed, patch
+            return done()
         if tracing:
             tracing.completed("review", wall, time.time(), round=agent.review_rounds + 1,
                               findings=len(verdict["findings"]), invalid=verdict["invalid_count"])
@@ -255,8 +247,10 @@ def review_before_acceptance(agent, run, spec, sandbox, snapshot, tracing, emit,
                          "error": verdict["parse_error"], "candidate_sha256": candidate_sha,
                          "reviewer": verdict["reviewer"], "summary": verdict["summary"],
                          "findings": verdict["findings"], "invalid": verdict["invalid"], "parse_error": verdict["parse_error"],
-                         "cost_usd": verdict["cost"]}
+                         "previous": verdict.get("previous", []), "cost_usd": verdict["cost"]}
         reviews.append(review_record)
+        # A failed answer verifies nothing; a parsed one settles the previous round's findings.
+        settled = settle(None if failed else verdict.get("previous", []))
         emit("REVIEW_FAILED" if failed else "REVIEW_COMPLETED", {
                                   "round": review_record["round"], "candidate_sha256": candidate_sha,
                                   "status": review_record["status"], "error": verdict["parse_error"],
@@ -264,36 +258,45 @@ def review_before_acceptance(agent, run, spec, sandbox, snapshot, tracing, emit,
                                   "findings": verdict["findings"], "invalid": verdict["invalid"],
                                   "invalid_count": verdict["invalid_count"], "parse_error": verdict["parse_error"]})
         blocking = review.blocking(verdict["findings"])
-        unresolved = len(blocking)
+        advisory = [finding for finding in verdict["findings"] if finding not in blocking]
+        dispositions.extend(review.dispositions([
+            {"id": index, "review_round": review_record["round"], **finding}
+            for index, finding in enumerate(advisory, start=len(blocking) + 1)]))
+        unresolved = max(len(blocking), sum(record["outcome"] in ("unresolved", "unverified") for record in settled))
         if not blocking:
-            return reviews, unresolved, candidate, changed, patch
+            return done()
         if agent.review_rounds >= review.max_rounds(run):
+            dispositions.extend(review.dispositions([
+                {"id": index, "review_round": review_record["round"], **finding}
+                for index, finding in enumerate(blocking, start=1)]))
             emit("REVIEW_UNRESOLVED", {"round": review_record["round"], "findings": blocking,
                                        "reason": f"已完成 {review.max_rounds(run)} 轮有限修订，评审仍有阻断项，交由独立验收判定。"})
-            return reviews, unresolved, candidate, changed, patch
+            return done()
         agent.review_rounds += 1
         emit("REVISION_REQUESTED", {"round": agent.review_rounds, "review_round": review_record["round"],
                                     "findings": blocking})
+        first_new_message = len(agent.messages)
         outcome = agent.revise(instruction, review.render_for_coder(blocking))
         if outcome.get("exit_status") != "Submitted":
             raise RuntimeError(f"Agent stopped during revision: {outcome.get('exit_status')}")
+        responses = review.coder_responses(agent.messages[first_new_message:], len(blocking))
+        previous = [{"id": index, "review_round": review_record["round"], "coder": responses[index], **finding}
+                    for index, finding in enumerate(blocking, start=1)]
 
 
 def execute_image_repository_run(run, spec, emit, cancelled, control=None, quota=None, tracing=None):
     """Work inside the repository a prepared image already carries.
 
-    SWE-bench instance images ship their own checkout and their own pinned environment, so
-    there is no bounded snapshot to copy in, nothing to restore, and the verdict belongs to the
-    official harness. Two of this project's controls are defined on the snapshot workspace and
-    therefore do not apply here: checkpoints (a lost attempt starts over) and approval pauses
-    (there is no safe-boundary file tree to bind an approval to). Network stays off.
+    Checkpoints retain a binary Git delta against the immutable image/base commit.
+    Recovery discards ignored caches and container environment changes. The verdict belongs
+    to the official harness; shell approval pauses remain disabled. Network stays off.
     """
     started = time.monotonic()
     folder = Path(os.getenv("ARTIFACT_ROOT", "runtime/artifacts")) / run["id"]
     folder.mkdir(parents=True, exist_ok=True)
     plan = control("resume-plan", {"generation": run["generation"]}) if control else {"mode": "fresh"}
-    if plan["mode"] != "fresh":
-        raise RuntimeError(f"An image workspace has no checkpoint to {plan['mode']} from")
+    if plan["mode"] not in ("fresh", "restore"):
+        raise RuntimeError(f"Image workspace cannot handle resume mode {plan['mode']}")
     # A pinned conda environment plus the repository's own tooling needs more than a snapshot
     # sandbox: an instance image runs out of 256 MB while importing it.
     # The official images expect to be driven as root (their own testbed layout is root-owned),
@@ -313,9 +316,20 @@ def execute_image_repository_run(run, spec, emit, cancelled, control=None, quota
         "model": os.getenv("MODEL_NAME") if run["mode"] == "live" else "deterministic",
     }
     try:
+        source_binding = image_workspace.initialize(sandbox, spec.commit if spec.instanceId else None)
+        restored = recovery.load_resume(run, plan["checkpoint"], source_binding) if plan["mode"] == "restore" else None
+        if restored:
+            if restored.binding["image_id"] != sandbox.container.image.id:
+                raise ValueError("Checkpoint image has changed")
+            image_workspace.restore(sandbox, restored.files)
+            recovery.preserve_trajectory(folder, restored.binding["generation"])
+            provenance["recovered_from"] = {"generation": restored.binding["generation"], "checkpoint_id": restored.id}
+        provenance["source_sha256"] = digest(source_binding)
+        provenance["checkpoint_scope"] = "tracked-and-nonignored-repository-files"
+        provenance["base_commit"] = sandbox.image_base
         emit("REPOSITORY_READY", provenance)
         if run.get("approvalPolicy", "auto") != "off":
-            emit("APPROVAL_POLICY_IGNORED", {"reason": "镜像工作区没有可绑定的文件树快照，本次运行不做动作审批。"})
+            emit("APPROVAL_POLICY_IGNORED", {"reason": "镜像评测模式不启用 shell 动作审批；候选交由官方 harness 验收。"})
         system = SYSTEM.replace("You repair a Python repository in /workspace.",
                                 f"You repair the Python repository checked out at {spec.workspacePath}.")
         # The images carry the base commit only, so history searches cost steps and find nothing.
@@ -338,20 +352,29 @@ def execute_image_repository_run(run, spec, emit, cancelled, control=None, quota
                                             "num_retries": 0, "max_tokens": 1600, "temperature": 0.2})
         # A real repository costs far more exploration than a bounded snapshot task, so the
         # image workspace declares a larger step budget; the value is recorded in the provenance.
-        step_limit = IMAGE_STEP_LIMIT + (REVISION_STEPS * review.max_rounds(run) if review.enabled(run) else 0)
+        step_limit = step_budget(run, IMAGE_STEP_LIMIT)
         provenance["step_limit"] = step_limit
+        provenance["review_budget"] = run.get("reviewBudget", "extra")
         agent = TracedAgent(model, sandbox, emit=emit, cancelled=cancelled, system_template=system,
                             context_mode="full", instance_template="Task: {{task}}",
                             step_limit=step_limit, cost_limit=0, wall_time_limit_seconds=WALL_TIME_SECONDS,
                             output_path=folder / "trajectory.json")
         agent.tracing = tracing
         agent.enable_quota(quota)
+        agent.enable_checkpoints(run, source_binding)
+        if restored:
+            agent.restore_checkpoint(plan["checkpoint"], allow_previous_generation=True)
+            emit("RECOVERED", {"generation": run["generation"], "from_generation": restored.binding["generation"],
+                               "checkpoint_id": restored.id, "model_calls": agent.n_calls,
+                               "workspace_sha256": restored.workspace_sha256})
         instruction = run["task"] + "\nDevelopment test command: " + spec.testCommand
         outcome = agent.run(instruction)
         if outcome.get("exit_status") != "Submitted":
             raise RuntimeError(f"Agent stopped: {outcome.get('exit_status')}")
-        reviews, unresolved, candidate, changed, patch = review_before_acceptance(
-            agent, run, spec, sandbox, lambda: image_candidate(sandbox, spec.workspacePath), tracing, emit, instruction)
+        source_preview = {}
+        reviews, unresolved, dispositions, candidate, changed, patch = review_before_acceptance(
+            agent, run, spec, sandbox, lambda: image_workspace.candidate(sandbox, folder, source_preview),
+            tracing, emit, instruction, source=source_preview)
         if len(patch.encode()) > 500000:
             raise ValueError("Patch exceeds event size limit")
         (folder / "candidate.patch").write_text(patch, encoding="utf-8")
@@ -367,8 +390,9 @@ def execute_image_repository_run(run, spec, emit, cancelled, control=None, quota
                                                       "provenance": provenance}), encoding="utf-8")
     result = {"patch": patch, "changed_files": changed, "provenance": provenance, "verification": verification,
               "review": {"policy": review.policy(run), "rounds": agent.review_rounds,
-                         "max_rounds": review.max_rounds(run), "unresolved_blocking": unresolved, "reviews": reviews},
-              "candidate_tree_stored": False,
+                         "max_rounds": review.max_rounds(run), "unresolved_blocking": unresolved, "reviews": reviews,
+                         "dispositions": dispositions, "budget": run.get("reviewBudget", "extra")},
+              "candidate_tree_stored": True, "file_artifacts_complete": True,
               **usage_summary(agent.full_messages, agent.n_calls, run["mode"]), "mode": run["mode"],
               "context_compactions": agent.compactions, "trace_id": tracing.trace_id() if tracing else None,
               "trace_parent_span_id": tracing.parent_span_id() if tracing else None,
@@ -444,7 +468,9 @@ def execute_repository_run(run, emit, cancelled, control=None, quota=None, traci
                                             "num_retries": 0, "max_tokens": 1600, "temperature": 0.2})
         # A revision round costs the coder steps as well, so the declared budget covers them
         # instead of letting the review loop run the attempt into its step limit.
-        step_limit = STEP_LIMIT + (REVISION_STEPS * review.max_rounds(run) if review.enabled(run) else 0)
+        step_limit = step_budget(run, STEP_LIMIT)
+        provenance["step_limit"] = step_limit
+        provenance["review_budget"] = run.get("reviewBudget", "extra")
         agent = TracedAgent(model, sandbox, emit=emit, cancelled=cancelled, system_template=system,
                             context_mode=run.get("contextMode", "full"),
                             instance_template="Task: {{task}}",
@@ -482,7 +508,7 @@ def execute_repository_run(run, emit, cancelled, control=None, quota=None, traci
             return candidate, changed, patch
 
         replayed_tree = {}
-        reviews, unresolved, candidate, changed, patch = review_before_acceptance(
+        reviews, unresolved, dispositions, candidate, changed, patch = review_before_acceptance(
             agent, run, spec, sandbox, snapshot, tracing, emit, instruction, source=source)
         # The patch of the last snapshot is the candidate both branches record.
         replayed = replayed_tree["replayed"]
@@ -534,7 +560,7 @@ def execute_repository_run(run, emit, cancelled, control=None, quota=None, traci
               "verification": verification,
               "review": {"policy": review.policy(run), "rounds": agent.review_rounds,
                          "max_rounds": review.max_rounds(run), "unresolved_blocking": unresolved,
-                         "reviews": reviews},
+                         "reviews": reviews, "dispositions": dispositions, "budget": run.get("reviewBudget", "extra")},
               "candidate_tree_stored": tree_stored,
               "trace_id": tracing.trace_id() if tracing else None,
               "trace_parent_span_id": tracing.parent_span_id() if tracing else None,

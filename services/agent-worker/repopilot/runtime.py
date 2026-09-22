@@ -16,6 +16,7 @@ from minisweagent.models.litellm_textbased_model import LitellmTextbasedModel
 from minisweagent.models.test_models import DeterministicModel, make_output
 
 from repopilot.fixture import DEVELOPMENT_TESTS, FIXED, SOURCE, VERIFICATION_TESTS
+from repopilot.model_policy import require_free_model
 from repopilot.policy import evaluate as evaluate_policy
 from repopilot.quota import QuotaTimeout, QuotaUnavailable
 from repopilot.reporting import usage_summary
@@ -60,7 +61,7 @@ class Sandbox:
             mounts[workspace] = "rw,size=16m,uid=1000,gid=1000"
         self.container = self.client.containers.run(
             image or os.environ.get("SANDBOX_IMAGE", "python:3.12-slim"),
-            ["sleep", "600"],
+            ["sleep", "infinity"],
             detach=True,
             working_dir=workspace,
             user=user,
@@ -177,7 +178,12 @@ class Sandbox:
 
 
 class SafeModel(LitellmTextbasedModel):
+    def _query(self, messages, **kwargs):
+        require_free_model(self.config.model_name)
+        return super()._query(messages, **kwargs)
+
     def __init__(self, **kwargs):
+        require_free_model(kwargs.get("model_name", ""))
         kwargs.setdefault("format_error_template", (
             "Expected exactly one executable action; found {{actions|length}}. "
             "Reply with one command in this exact format:\n"

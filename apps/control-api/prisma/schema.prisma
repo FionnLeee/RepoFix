@@ -20,6 +20,7 @@ model Run {
   approvalPolicy String @default("auto")
   reviewPolicy String @default("auto")
   reviewRounds Int?
+  reviewBudget String @default("extra")
   recoveryAttempts Int @default(0)
   status String @default("QUEUED")
   workerId String?

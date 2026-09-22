@@ -101,7 +101,7 @@ def test_test_mutation_invalidates_evidence_before_model_call(tmp_path, monkeypa
         SimpleNamespace(allowedPaths=["a.py"], testCommand="test"), SimpleNamespace(execute=execute),
         lambda: (dict(workspace), ["a.py"], workspace["a.py"]), None, lambda *_: None, "fix")
     assert result[0][0]["status"] == "failed"
-    assert result[2] == workspace and result[4] == "x=2"
+    assert result[3] == workspace and result[5] == "x=2"
 
 
 def test_deleted_and_truncated_sources_are_explicitly_partial():
@@ -123,3 +123,97 @@ def test_deleted_file_findings_bind_to_base_and_large_file_uses_changed_hunk():
         "actual test output", with_coverage=True)
     assert "1000 | CHANGED_HERE" in messages[1]["content"] and partial
     assert "actual test output" in messages[1]["content"]
+
+
+@pytest.mark.parametrize("edit_changes", [True, False])
+def test_dispositions_follow_the_reviewer_verdict_not_the_coders_claim(tmp_path, monkeypatch, edit_changes):
+    """Round 1 finds a blocking problem; the coder answers per finding; round 2 settles each one."""
+    from minisweagent.exceptions import Submitted
+
+    answers = iter([
+        {"summary": "one problem", "findings": [
+            {"file": "a.py", "line": 1, "severity": "blocking", "finding": "wrong", "trigger": "", "evidence": "",
+             "suggestion": ""},
+            {"file": "a.py", "line": 1, "severity": "blocking", "finding": "also wrong", "trigger": "", "evidence": "",
+             "suggestion": ""}]},
+        {"summary": "settled", "findings": [], "previous": [{"id": 1, "status": "fixed", "note": "now rounds"},
+                                                            {"id": 2, "status": "rejected_ok", "note": "test covers it"}]},
+    ])
+    import json
+    monkeypatch.setattr(review, "reviewer_for", lambda *args: SimpleNamespace(
+        complete=lambda messages: {"content": "```json\n" + json.dumps(next(answers)) + "\n```", "cost": 0}))
+    workspace = {"a.py": "x=1"}
+
+    class Env:
+        def execute(self, action, cwd=""):
+            if action["command"].strip() == "echo COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT":
+                raise Submitted({"role": "exit", "content": "done", "extra": {"exit_status": "Submitted", "submission": ""}})
+            if edit_changes:
+                workspace["a.py"] = "x=2"
+            return {"output": "ok", "returncode": 0, "exception_info": ""}
+
+        def serialize(self):
+            return {}
+
+        def get_template_vars(self):
+            return {}
+
+    model = DeterministicModel(outputs=[
+        make_output("edit", [{"command": "sed -i s/1/2/ a.py"}]),
+        make_output("submit\nREVIEW-RESPONSE 1: fixed - rounded\nREVIEW-RESPONSE 2: rejected - covered by test_x",
+                    [{"command": "echo COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT"}]),
+    ])
+    agent = TracedAgent(model, Env(), emit=lambda *_: None, cancelled=threading.Event(), system_template="",
+                        instance_template="{{task}}", step_limit=10, output_path=tmp_path / "trajectory.json")
+    agent.extra_template_vars = {"task": "fix"}
+    agent.add_messages({"role": "user", "content": "fix"})
+    events = []
+    reviews, unresolved, dispositions, candidate, changed, patch = review_before_acceptance(
+        agent, {"mode": "live", "task": "fix", "reviewRounds": 2}, SimpleNamespace(allowedPaths=["a.py"], testCommand="test"),
+        SimpleNamespace(execute=lambda _: {"output": "ok"}),
+        lambda: (dict(workspace), ["a.py"], workspace["a.py"]), None, lambda event, data: events.append((event, data)), "fix")
+    assert unresolved == 0 and len(reviews) == 2 and agent.review_rounds == 1
+    assert [d["outcome"] for d in dispositions] == ["fixed", "rejected_with_evidence"]
+    assert dispositions[0]["coder"] == {"status": "fixed", "note": "rounded"}
+    assert dispositions[1]["coder"] == {"status": "rejected", "note": "covered by test_x"}
+    assert dispositions[1]["reviewer"]["note"] == "test covers it"
+    # The second review request carried the coder's answers for the reviewer to judge.
+    assert any(event == "REVIEW_DISPOSITIONS" and data["records"] == dispositions for event, data in events)
+
+
+def test_unverified_when_rounds_run_out_before_a_re_review(tmp_path, monkeypatch):
+    import json
+
+    from minisweagent.exceptions import Submitted
+    monkeypatch.setattr(review, "reviewer_for", lambda *args: SimpleNamespace(
+        complete=lambda messages: {"content": "```json\n" + json.dumps({"summary": "p", "findings": [
+            {"file": "a.py", "line": 1, "severity": "blocking", "finding": "wrong"}]}) + "\n```", "cost": 0}))
+    workspace = {"a.py": "x=1"}
+
+    class Env:
+        def execute(self, action, cwd=""):
+            if action["command"].strip() == "echo COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT":
+                raise Submitted({"role": "exit", "content": "done", "extra": {"exit_status": "Submitted", "submission": ""}})
+            workspace["a.py"] = "x=3"
+            return {"output": "ok", "returncode": 0, "exception_info": ""}
+
+        def serialize(self):
+            return {}
+
+        def get_template_vars(self):
+            return {}
+
+    model = DeterministicModel(outputs=[make_output("edit", [{"command": "edit"}]),
+                                        make_output("REVIEW-RESPONSE 1: fixed - done", [{"command": "echo COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT"}])])
+    agent = TracedAgent(model, Env(), emit=lambda *_: None, cancelled=threading.Event(), system_template="",
+                        instance_template="{{task}}", step_limit=10, output_path=tmp_path / "trajectory.json")
+    agent.extra_template_vars = {"task": "fix"}
+    agent.add_messages({"role": "user", "content": "fix"})
+    result = review_before_acceptance(agent, {"mode": "live", "task": "fix", "reviewRounds": 1},
+        SimpleNamespace(allowedPaths=["a.py"], testCommand="test"), SimpleNamespace(execute=lambda _: {"output": "ok"}),
+        lambda: (dict(workspace), ["a.py"], workspace["a.py"]), None, lambda *_: None, "fix")
+    reviews, unresolved, dispositions = result[0], result[1], result[2]
+    # One revision was allowed; the re-review found the same problem, so the record is what the
+    # reviewer said (open), never the coder's "fixed".
+    assert len(reviews) == 2 and unresolved == 1
+    assert dispositions[0]["coder"]["status"] == "fixed" and dispositions[0]["outcome"] == "unverified"

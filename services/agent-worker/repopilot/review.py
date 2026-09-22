@@ -15,6 +15,8 @@ import json
 import os
 import re
 
+from repopilot.model_policy import require_free_model
+
 SEVERITIES = ("blocking", "major", "minor")
 BLOCKING_SEVERITIES = ("blocking",)
 DEFAULT_MAX_ROUNDS = 2
@@ -42,7 +44,15 @@ file use `"side": "base"` and a line in its supplied base source; otherwise use 
 `severity` is
 blocking (wrong result, crash, regression, unmet requirement), major (fragile or uncovered),
 or minor (naming, style). Use `"findings": []` when nothing is worth reporting: an empty
-review is a valid and common answer."""
+review is a valid and common answer.
+When the request lists findings from your previous round together with the coder's response,
+also return `"previous": [{"id": 1, "status": "fixed", "note": "why"}]` with one entry per
+listed finding: `fixed` (the candidate now handles it), `rejected_ok` (the coder's evidence
+shows it was not a real problem), or `open` (still present; then also report it again in
+`findings` with its current position)."""
+
+PREVIOUS_STATUSES = ("fixed", "rejected_ok", "open")
+RESPONSE = re.compile(r"REVIEW-RESPONSE\s+(\d+)\s*:\s*(fixed|rejected)\b\s*[-—:]?\s*(.*)", re.IGNORECASE)
 
 
 def policy(run):
@@ -81,12 +91,24 @@ def _numbered(name, text, limit=MAX_FILE, patch=""):
     return body[:limit] + ("\n[... truncated ...]" if len(body) > limit or len(rendered) < len(lines) else "")
 
 
-def request(run, spec, candidate, changed, patch, evidence, base=None, with_coverage=False):
-    """The reviewer's own message list: nothing of the coder's history is carried over."""
+def request(run, spec, candidate, changed, patch, evidence, base=None, with_coverage=False, previous=None):
+    """The reviewer's own message list: nothing of the coder's history is carried over.
+
+    ``previous`` carries the blocking findings of the last round with the coder's stated
+    response, so the reviewer judges each one instead of the coder grading its own revision.
+    """
     parts = [f"Task: {run['task']}", f"Allowed paths: {', '.join(spec.allowedPaths)}",
              f"Development test command: {spec.testCommand}"]
     # Keep test evidence before optional source excerpts so the request budget cannot erase it.
     parts.append("Development test output on this candidate:\n```\n" + evidence[:3000] + "\n```")
+    if previous:
+        lines = ["Your previous round reported these findings; the coder revised and responded:"]
+        for item in previous:
+            response = item.get("coder") or {}
+            lines.append(f"{item['id']}. [{item['severity']}] {item['file']}:{item['line']} {item['finding']}"
+                         f"\n   coder response: {response.get('status', 'unstated')}"
+                         + (f" - {response['note']}" if response.get("note") else ""))
+        parts.append("\n".join(lines)[:MAX_PATCH])
     parts.append("Candidate diff:\n```diff\n" + patch[:MAX_PATCH] + "\n```")
     for name in sorted(changed):
         if name not in candidate:
@@ -126,7 +148,7 @@ def _position_error(item, candidate, base=None):
 
 def parse(text, candidate, base=None):
     """Validate a review answer; unusable findings are dropped and counted, never trusted."""
-    result = {"summary": "", "findings": [], "invalid": [], "parse_error": None}
+    result = {"summary": "", "findings": [], "invalid": [], "parse_error": None, "previous": []}
     match = BLOCK.search(text or "") or re.search(r"(\{.*\})", text or "", re.DOTALL)
     if not match:
         result["parse_error"] = "no json object in the answer"
@@ -140,6 +162,10 @@ def parse(text, candidate, base=None):
         result["parse_error"] = "the answer is not a json object"
         return result
     result["summary"] = _text(payload.get("summary"))
+    listed = payload.get("previous") if isinstance(payload.get("previous"), list) else []
+    for item in listed:
+        if isinstance(item, dict) and type(item.get("id")) is int and item.get("status") in PREVIOUS_STATUSES:
+            result["previous"].append({"id": item["id"], "status": item["status"], "note": _text(item.get("note"))})
     raw = payload.get("findings")
     if not isinstance(raw, list):
         result["parse_error"] = "findings is not a list"
@@ -181,6 +207,7 @@ class ModelReviewer:
     def complete(self, messages):
         import litellm
 
+        require_free_model(self.name)
         response = litellm.completion(model=f"openai/{self.name}", messages=messages, api_base=self.api_base,
                                       api_key=self.api_key, timeout=self.timeout, num_retries=0,
                                       max_tokens=self.max_tokens, temperature=self.temperature)
@@ -241,25 +268,74 @@ def reviewer_for(run, source, candidate, changed, round_index=0):
 
 
 def render_for_coder(findings):
-    """The feedback the coder receives: the reviewer's own words, nothing else."""
+    """The feedback the coder receives: the reviewer's own words, numbered, plus how to answer them.
+
+    A finding may be rejected, but only with evidence the reviewer can check; the answer is
+    recorded per finding, so "fixed" and "argued away" never look the same afterwards.
+    """
     lines = ["Review of your last submitted candidate found problems that must be handled.",
-             "You are still in the same workspace; fix them and submit again.",
-             "Fix supported findings. If a finding is a false positive, use tools to demonstrate concrete"
-             " test/code evidence and resubmit; do not change correct code just to satisfy the reviewer."]
-    for finding in findings:
-        lines.append(f"- [{finding['severity']}] {finding['file']}:{finding['line']} {finding['finding']}"
+             "You are still in the same workspace; handle every numbered finding, then submit again.",
+             "Fix a finding that is real. If a finding is wrong, do not change correct code to satisfy it:"
+             " show concrete test or code evidence instead.",
+             "In the message that contains your submit command, answer each finding on its own line as"
+             " `REVIEW-RESPONSE <n>: fixed - <what changed>` or `REVIEW-RESPONSE <n>: rejected - <evidence>`."]
+    for index, finding in enumerate(findings, start=1):
+        lines.append(f"{index}. [{finding['severity']}] {finding['file']}:{finding['line']} {finding['finding']}"
                      + (f" Trigger: {finding['trigger']}" if finding["trigger"] else "")
                      + (f" Suggestion: {finding['suggestion']}" if finding["suggestion"] else ""))
     return "\n".join(lines)
 
 
-def perform(reviewer, run, spec, candidate, changed, patch, evidence, round_index, base=None):
+def coder_responses(messages, count):
+    """The coder's stated answer per finding id, read from its own messages after the feedback."""
+    answers = {}
+    for message in messages:
+        if message.get("role") != "assistant":
+            continue
+        for match in RESPONSE.finditer(str(message.get("content", ""))):
+            index = int(match.group(1))
+            if 1 <= index <= count:
+                answers[index] = {"status": match.group(2).lower(), "note": _text(match.group(3), 300)}
+    return {index: answers.get(index, {"status": "unstated", "note": ""}) for index in range(1, count + 1)}
+
+
+def dispositions(previous, reviewer_previous=None):
+    """One record per earlier finding: what the coder said, what the reviewer verified, the outcome.
+
+    Without a reviewer verdict (rounds exhausted, review failed) the coder's claim stays
+    ``unverified``; it is never promoted to ``fixed`` on the coder's word alone.
+    """
+    listed = reviewer_previous or []
+    verdicts = {item["id"]: item for item in listed if sum(other["id"] == item["id"] for other in listed) == 1}
+    records = []
+    for item in previous:
+        verdict = verdicts.get(item["id"])
+        coder = item.get("coder") or {"status": "unstated", "note": ""}
+        if verdict is None:
+            outcome, reviewer = "unverified", {"status": "unverified", "note": ""}
+        else:
+            reviewer = {"status": verdict["status"], "note": verdict.get("note", "")}
+            outcome = {"fixed": "fixed", "rejected_ok": "rejected_with_evidence", "open": "unresolved"}[verdict["status"]]
+            if outcome == "rejected_with_evidence" and (
+                    coder["status"] != "rejected" or not coder.get("note") or not reviewer["note"]):
+                outcome = "unverified"
+        records.append({"id": item["id"], "review_round": item["review_round"], "file": item["file"],
+                        "line": item["line"], "side": item.get("side", "candidate"),
+                        "severity": item["severity"], "finding": item["finding"],
+                        "coder": coder, "reviewer": reviewer, "outcome": outcome})
+    return records
+
+
+def perform(reviewer, run, spec, candidate, changed, patch, evidence, round_index, base=None, previous=None):
     """Ask for one review and return it with the position validation already applied."""
-    messages, partial = request(run, spec, candidate, changed, patch, evidence, base, with_coverage=True)
+    messages, partial = request(run, spec, candidate, changed, patch, evidence, base, with_coverage=True,
+                                previous=previous)
     answer = reviewer.complete(messages)
     parsed = parse(answer["content"], candidate, base)
     # Coverage describes evidence supplied, not a claim that the reviewer understood every line.
-    parsed["partial"] = partial
+    expected = {item["id"] for item in previous or []}
+    supplied = [item["id"] for item in parsed["previous"]]
+    parsed["partial"] = partial or bool(expected and (set(supplied) != expected or len(supplied) != len(expected)))
     parsed.update(round=round_index, reviewer=answer.get("reviewer"), cost=answer.get("cost") or 0.,
                   usage=answer.get("usage"), content=answer["content"],
                   blocking_count=len(blocking(parsed["findings"])), invalid_count=len(parsed["invalid"]))

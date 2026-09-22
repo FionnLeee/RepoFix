@@ -34,7 +34,7 @@ def test_repeated_format_failure_preserves_all_usage_and_redacts_error(tmp_path,
     monkeypatch.setenv("OPENAI_API_KEY", "test-secret")
     run = {"id": str(uuid4()), "mode": "live"}
     agent = TracedAgent(
-        RecordedInvalidModel(model_name="openai/test", cost_tracking="ignore_errors"), UnusedEnvironment(),
+        RecordedInvalidModel(model_name="openai/deepseek-v4-pro-0813", cost_tracking="ignore_errors"), UnusedEnvironment(),
         emit=lambda *_: None, cancelled=threading.Event(), system_template="Repair the repository",
         instance_template="{{task}}", output_path=tmp_path / run["id"] / "trajectory.json", step_limit=5,
     )

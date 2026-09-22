@@ -100,6 +100,11 @@ type Run = {
       rounds: number;
       max_rounds: number;
       unresolved_blocking: number;
+      budget?: string;
+      dispositions?: {
+        id: number; review_round: number; file: string; line: number; severity: string; finding: string;
+        coder: { status: string; note: string }; reviewer: { status: string; note: string }; outcome: string;
+      }[];
       reviews: {
         round: number;
         status: string;
@@ -151,6 +156,7 @@ const labels: Record<string, string> = {
   REVIEW_UNRESOLVED: "修订后仍有阻断项",
   REVIEW_FAILED: "评审未能完成",
   REVISION_REQUESTED: "要求有限修订",
+  REVIEW_DISPOSITIONS: "评审意见处置已记录",
   DELIVERY_REQUESTED: "登记交付到目标仓库",
   DELIVERY_APPROVED: "已批准交付",
   DELIVERY_REJECTED: "已拒绝交付",
@@ -195,6 +201,7 @@ function Workspace() {
     [approvalPolicy, setApprovalPolicy] = useState("auto"),
     [reviewPolicy, setReviewPolicy] = useState("auto"),
     [reviewRounds, setReviewRounds] = useState(2),
+    [reviewBudget, setReviewBudget] = useState("extra"),
     [testCommand, setTestCommand] = useState("python -m unittest discover -v"),
     [verification, setVerification] = useState("import unittest\n\nclass Acceptance(unittest.TestCase):\n    def test_behavior(self):\n        # 替换为实际业务断言\n        self.fail('请填写独立验收测试')\n"),
     [busy, setBusy] = useState(false);
@@ -247,7 +254,7 @@ function Workspace() {
         mode,
         requestKey: crypto.randomUUID(),
         approvalPolicy,
-        ...(taskKind === "legacy" ? {} : { reviewPolicy, reviewRounds }),
+        ...(taskKind === "legacy" ? {} : { reviewPolicy, reviewRounds, reviewBudget }),
         ...(taskKind === "legacy" ? {} : taskKind === "custom" ? {
           task: taskText, contextMode, memoryEnabled,
           spec: { source, commit, subdir, allowedPaths: paths.split(",").map(p => p.trim()).filter(Boolean),
@@ -429,6 +436,10 @@ function Workspace() {
             </select></label>}
             {taskKind !== "legacy" && reviewPolicy === "auto" && <label>修订上限<select value={reviewRounds} onChange={e => setReviewRounds(Number(e.target.value))}>
               {[0, 1, 2, 3].map(n => <option key={n} value={n}>{n} 轮</option>)}
+            </select></label>}
+            {taskKind !== "legacy" && reviewPolicy === "auto" && <label>评审预算<select value={reviewBudget} onChange={e => setReviewBudget(e.target.value)}>
+              <option value="extra">额外：每轮修订加 5 步</option>
+              <option value="shared">共享：评审与修订占用原有步数（对照实验）</option>
             </select></label>}
             {taskKind !== "custom" && taskKind !== "legacy" && <p className="form-wide">
               {baselines.data?.find(t => t.id === taskKind)?.task}<br />
@@ -780,7 +791,7 @@ function Workspace() {
                         <span className={`badge ${reviewPolicy === "off" ? "" : "on"}`}>
                           评审{run.result.review?.policy === "off" ? "关闭" : "开启"}
                         </span>
-                        <span>已完成 {run.result.review?.rounds ?? 0} 轮有限修订</span>
+                        <span>已完成 {run.result.review?.rounds ?? 0} 轮有限修订{run.result.review?.budget === "shared" ? "（共享预算）" : ""}</span>
                         {(run.result.review?.unresolved_blocking ?? 0) > 0 && <span className="severity severity-blocking">
                           修订上限后仍有 {run.result.review?.unresolved_blocking} 条阻断项，交由独立验收判定
                         </span>}
@@ -796,6 +807,16 @@ function Workspace() {
                           {record.findings?.map((finding, index) => (
                             <span key={index} className="muted">{finding.file}:{finding.line}</span>
                           ))}
+                        </li>)}
+                      </ul>}
+                      {(run.result.review?.dispositions?.length ?? 0) > 0 && <ul className="review-history">
+                        {run.result.review!.dispositions!.map((d) => <li key={`${d.review_round}-${d.id}`}>
+                          <span>第 {d.review_round} 轮意见 {d.id} · {d.file}:{d.line}</span>
+                          <span className="muted">{d.finding}</span>
+                          <span>执行者：{({fixed: "称已修复", rejected: "提出反驳", unstated: "未答复"} as Record<string, string>)[d.coder.status] || d.coder.status}{d.coder.note ? `（${d.coder.note}）` : ""}</span>
+                          <span className={d.outcome === "unresolved" ? "stale" : d.outcome === "unverified" ? "muted" : ""}>
+                            评审：{({fixed: "已修复", rejected_with_evidence: "驳回成立", unresolved: "仍未解决", unverified: "未经复核"} as Record<string, string>)[d.outcome] || d.outcome}{d.reviewer.note ? `（${d.reviewer.note}）` : ""}
+                          </span>
                         </li>)}
                       </ul>}
                       <button

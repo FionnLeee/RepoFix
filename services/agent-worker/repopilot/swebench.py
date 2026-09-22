@@ -128,7 +128,8 @@ def batch_predictions(run_ids, fetch, model_name="repopilot"):
             raise ValueError(f"Instance/run binding mismatch: {instance_id}/{run_id}")
         runs.append(run)
         patch = (run.get("result") or {}).get("patch") or ""
-        config = {key: run.get(key) for key in ("task", "spec", "mode", "contextMode", "reviewPolicy", "reviewRounds")}
+        config = {key: run.get(key) for key in ("task", "spec", "mode", "contextMode", "reviewPolicy", "reviewRounds",
+                                               "reviewBudget", "approvalPolicy", "memoryEnabled")}
         config["provenance"] = (run.get("result") or {}).get("provenance")
         manifest.append({"instance_id": instance_id, "run_id": run_id,
                          "patch_sha256": hashlib.sha256(patch.encode()).hexdigest(),

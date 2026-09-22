@@ -8,8 +8,8 @@ PASS_TO_PASS，RepoPilot 只负责产出补丁；两者的结论不可互换，�
   export     把已完成的实例运行写成官方 predictions.jsonl
   import     把官方报告汇总进本地记录
 
-官方 harness 已在本机对两个已筛选实例完成真实模型补丁评测；新增 live 运行仍需要有效模型凭据。
-完整的本地记录与命令见 docs/evidence/M5-swebench.md。
+官方 harness 已在本机完成十实例样本（3/10 resolved，覆盖七个仓库）；新增 live 运行仍需有效的免费模型凭据，
+preflight 会提示模型名是否在账号的免费清单里。完整的本地记录与命令见 docs/evidence/M5-swebench.md。
 """
 
 import argparse
@@ -27,6 +27,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "services/agent-worker"))
 from repopilot import swebench  # noqa: E402
+from repopilot.model_policy import FREE_MODELS  # noqa: E402
 
 API = os.getenv("CONTROL_API_URL", "http://localhost:3101")
 CACHE = Path(os.getenv("SWEBENCH_CACHE", str(ROOT / "runtime" / "swebench")))
@@ -99,6 +100,18 @@ def docker_out(*args):
         return 1, ""
 
 
+def configured_model():
+    """The model the worker will really use: .env decides, not whatever this shell exports."""
+    try:
+        for line in (ROOT / ".env").read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if line.startswith("MODEL_NAME="):
+                return line.split("=", 1)[1].strip().strip("'\"")
+    except OSError:
+        pass
+    return os.getenv("MODEL_NAME", "")
+
+
 def preflight():
     checks = []
 
@@ -136,6 +149,14 @@ def preflight():
     cached = cached_instances()
     check("instance_cache", bool(cached), f"{len(cached)} 个本地实例：{', '.join(cached[:5])}" if cached
           else f"{CACHE} 为空；缓存实例 JSON 后 prepare 才能用")
+    # The endpoint's catalogue lists what can be called, not what is free: only the model names
+    # the account's own quota page covers are free, and everything else is billed by usage.
+    model = configured_model()
+    free_names = sorted(FREE_MODELS)
+    check("live_model_name", model in free_names,
+          f"MODEL_NAME={model} 在免费清单里" if model in free_names else
+          f"MODEL_NAME={model} 不在免费清单（{', '.join(free_names)}）里；能调用不等于免费，"
+          "以账号额度页为准")
     code, listing = docker_out("images", "--filter", "reference=swebench/sweb.eval.*", "--format", "{{.Size}}")
     free = shutil.disk_usage(ROOT).free / 1e9
     check("disk_headroom", free >= 10,
@@ -143,7 +164,8 @@ def preflight():
           "固定子集需要先腾出数十 GB")
     check("delegated_verification_path", True,
           "由 pytest 集成用例覆盖（test_a_harness_verified_run_delivers_a_patch_without_local_acceptance）")
-    report = {"checks": checks, "ok": all(entry["ok"] for entry in checks if entry["name"] != "disk_headroom"),
+    advisory = {"disk_headroom"}
+    report = {"checks": checks, "ok": all(entry["ok"] for entry in checks if entry["name"] not in advisory),
               "note": "本报告只说明接线是否就绪；模型成绩需要真实运行后才有。"}
     VALIDATION.mkdir(parents=True, exist_ok=True)
     (VALIDATION / "swebench-preflight.json").write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")

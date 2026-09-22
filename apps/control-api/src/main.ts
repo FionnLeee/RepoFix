@@ -97,6 +97,8 @@ class CreateRun {
   @IsOptional() @IsIn(["auto", "strict"]) approvalPolicy?: string;
   @IsOptional() @IsIn(["auto", "off"]) reviewPolicy?: string;
   @IsOptional() @IsInt() @Min(0) @Max(5) reviewRounds?: number;
+  // "extra" adds revision steps to the coder's limit; "shared" keeps one budget for both roles.
+  @IsOptional() @IsIn(["extra", "shared"]) reviewBudget?: string;
 }
 class Claim {
   @IsString() @MinLength(1) @MaxLength(100) workerId!: string;
@@ -390,6 +392,7 @@ class Api {
     const reviewPolicy = spec ? body.reviewPolicy || "auto" : "off";
     // The bounded revision count is the reviewer's budget, not the coder's; NULL means default.
     const reviewRounds = spec ? body.reviewRounds ?? null : null;
+    const reviewBudget = spec ? body.reviewBudget || "extra" : "extra";
     const projectId = spec ? projectKey(spec.source, spec.subdir) : null;
     if (spec) {
       if (!baseline && !body.task) throw new BadRequestException("指定仓库需要任务说明");
@@ -410,7 +413,7 @@ class Api {
       canonical(run.spec) === canonical(spec) && run.baselineId === (body.baselineId || null) &&
       run.contextMode === contextMode && run.memoryEnabled === memoryEnabled &&
       run.approvalPolicy === approvalPolicy && run.reviewPolicy === reviewPolicy &&
-      (run.reviewRounds ?? null) === reviewRounds;
+      (run.reviewRounds ?? null) === reviewRounds && run.reviewBudget === reviewBudget;
     const existing = await this.db.run.findUnique({
       where: { requestKey: body.requestKey },
     });
@@ -426,7 +429,7 @@ class Api {
         const run = await tx.run.create({
           data: { requestKey: body.requestKey, mode: body.mode, task,
             ...(spec ? { spec: spec as Prisma.InputJsonValue } : {}), baselineId: body.baselineId,
-            contextMode, projectId, memoryEnabled, approvalPolicy, reviewPolicy, reviewRounds },
+            contextMode, projectId, memoryEnabled, approvalPolicy, reviewPolicy, reviewRounds, reviewBudget },
         });
         await tx.event.create({
           data: {
@@ -736,8 +739,11 @@ class Api {
     const source = readTree("source.json");
     const candidate = readTree("candidate.json");
     if (!source || !candidate) throw new NotFoundException("该任务没有可对比的候选快照");
-    const changed = [...new Set([...Object.keys(source), ...Object.keys(candidate)])]
-      .filter((name) => source[name] !== candidate[name])
+    let artifactFiles: { path: string; base: unknown; candidate: unknown; status: string }[] = [];
+    try { artifactFiles = JSON.parse(fs.readFileSync(path.join(folder, "file-changes.json"), "utf8")).files; }
+    catch { /* Snapshot runs predate the binary blob manifest. */ }
+    const changed = [...new Set([...Object.keys(source), ...Object.keys(candidate), ...artifactFiles.map(f => f.path)])]
+      .filter((name) => source[name] !== candidate[name] || artifactFiles.some(f => f.path === name))
       .sort();
     const base: Record<string, string> = {};
     const head: Record<string, string> = {};
@@ -747,7 +753,9 @@ class Api {
       const before = source[name] ?? "";
       const after = candidate[name] ?? "";
       // The diff view is a reading aid, so oversized inputs are reported rather than truncated.
-      if (!pathPattern.test(name) || before.length + after.length + characters > 800000) {
+      const record = artifactFiles.find(f => f.path === name);
+      if ((record?.base && !(name in source)) || (record?.candidate && !(name in candidate)) ||
+          !pathPattern.test(name) || before.length + after.length + characters > 800000) {
         omitted += 1;
         continue;
       }
@@ -755,7 +763,7 @@ class Api {
       head[name] = after;
       characters += before.length + after.length;
     }
-    return { changed_files: changed, omitted_files: omitted, base, candidate: head };
+    return { changed_files: changed, omitted_files: omitted, base, candidate: head, file_artifacts: artifactFiles };
   }
   @Get("runs/:id/stream") async stream(
     @Param("id") id: string,

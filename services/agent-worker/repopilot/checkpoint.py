@@ -260,9 +260,21 @@ def restore_check(run_id, generation, checkpoint_id=None):
         raise ValueError("No registered checkpoint matches the requested run and generation")
     reference = max(matches, key=lambda item: item["sequence"])
     checkpoint = load_registered(root, run_id, reference)
+    detail = httpx.get(f"{os.getenv('CONTROL_API_URL', 'http://localhost:3101')}/runs/{run_id}",
+                       timeout=15).raise_for_status().json()
+    image_mode = (detail.get("spec") or {}).get("workspaceMode") == "image"
+    if image_mode:
+        if checksum(detail["spec"]) != checkpoint.binding["spec_sha256"]:
+            raise ValueError("Checkpoint spec does not match the control-plane task")
+        workspace = detail["spec"]["workspacePath"]
     sandbox = Sandbox(f"checkpoint-check-{uuid.uuid4()}", lambda *_: None, threading.Event(),
-                      files=checkpoint.files, image=checkpoint.binding["image_id"])
+                      files={} if image_mode else checkpoint.files, image=checkpoint.binding["image_id"],
+                      **({"workspace": workspace, "writable": True, "user": "0:0", "memory": "2g"} if image_mode else {}))
     try:
+        if image_mode:
+            from repopilot import image_workspace
+            image_workspace.initialize(sandbox, checkpoint.files["image-base"])
+            image_workspace.restore(sandbox, checkpoint.files)
         if sandbox.container.image.id != checkpoint.binding["image_id"] or read_tree(sandbox) != checkpoint.files:
             raise ValueError("Restored workspace differs from checkpoint")
     finally:

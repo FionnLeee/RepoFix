@@ -1,0 +1,1 @@
+ALTER TABLE "Run" ADD COLUMN "reviewBudget" TEXT NOT NULL DEFAULT 'extra';
