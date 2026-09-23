@@ -765,6 +765,32 @@ class Api {
     }
     return { changed_files: changed, omitted_files: omitted, base, candidate: head, file_artifacts: artifactFiles };
   }
+  /** Only a blob named by this run's manifest can be downloaded; verify its stored bytes. */
+  @Get("runs/:id/artifacts/:sha") async artifactBlob(
+    @Param("id") id: string, @Param("sha") sha: string, @Res() reply: any,
+  ) {
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(id) ||
+        !/^[0-9a-f]{64}$/.test(sha)) throw new BadRequestException("工件标识无效");
+    if (!(await this.db.run.findUnique({ where: { id } }))) throw new NotFoundException();
+    const folder = path.join(process.env.ARTIFACT_ROOT || "runtime/artifacts", id);
+    let records: any[];
+    try {
+      records = JSON.parse(fs.readFileSync(path.join(folder, "file-changes.json"), "utf8")).files;
+      if (!Array.isArray(records)) throw new Error("invalid manifest");
+    } catch { throw new NotFoundException("该任务没有文件工件清单"); }
+    const blob = records.flatMap(record => [record.base, record.candidate])
+      .find(item => item?.sha256 === sha && item.blob === `blobs/${sha}`);
+    if (!blob) throw new NotFoundException("该工件不属于本次运行");
+    let data: Buffer;
+    try { data = fs.readFileSync(path.join(folder, "blobs", sha)); }
+    catch { throw new NotFoundException("文件工件缺失"); }
+    if (data.length !== blob.bytes || createHash("sha256").update(data).digest("hex") !== sha)
+      throw new ConflictException("文件工件校验失败");
+    return reply.header("content-type", "application/octet-stream")
+      .header("content-disposition", `attachment; filename="${sha}.bin"`)
+      .header("x-content-type-options", "nosniff")
+      .header("cache-control", "no-store").send(data);
+  }
   @Get("runs/:id/stream") async stream(
     @Param("id") id: string,
     @Headers("last-event-id") lastId: string | undefined,

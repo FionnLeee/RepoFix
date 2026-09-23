@@ -205,9 +205,9 @@ image 任务先将一次性容器中的仓库还原到指定 `base_commit`，再
 
 恢复范围是 Git 跟踪与未忽略的仓库文件；忽略的缓存、依赖安装、进程、容器其他目录和 `/tmp` 不在范围内。仍强制 full context，不启用 shell 动作审批。差异超出检查点的 4 MiB 编码快照上限或工作区有后台进程时拒绝保存，不静默截断。
 
-产出候选后保存全部变更文件的 `file-changes.json`、内容寻址的 base/candidate 原始 `blobs/`、完整二进制 `candidate.patch`，以及 UTF-8 预览 `source.json` / `candidate.json`。支持新增、删除、大文件、二进制文件与超过 60 个变更文件；基线仓库其余内容由固定镜像和 commit 标识。网页仍有显示上限，省略项单独计数，完整 blob 不因预览限制丢弃。
+产出候选后保存全部变更文件的 `file-changes.json`、内容寻址的 base/candidate 原始 `blobs/`、完整二进制 `candidate.patch`，以及 UTF-8 预览 `source.json` / `candidate.json`。支持新增、删除、大文件、二进制文件与超过 60 个变更文件；基线仓库其余内容由固定镜像和 commit 标识。网页仍有显示上限，省略项单独计数，完整 blob 不因预览限制丢弃。候选差异页可逐文件下载基准与候选原始内容；API 只返回本次运行清单列出的 blob，并在下载时校验字节数与 SHA-256。
 
-模型请求前强制检查用户提供的免费名称白名单，清单见 `services/agent-worker/repopilot/model_policy.py`。2026-09-22 根据用户最新额度表更新为 9 个名称；清单外模型在发送请求前失败，不自动切换模型或付费回退。白名单不表示已经使用过这些模型，也不代表批准自动消耗其额度。
+模型请求前按 `MODEL_POLICY` 校验路由，规则见 `services/agent-worker/repopilot/model_policy.py`。`free-quota` 只接受用户列出的 9 个免费名称；`official-deepseek` 只接受官方 `https://api.deepseek.com` 的 `deepseek-flash`，按官方价格计费。官方路由明确关闭思考模式，Coder 与 Reviewer 均不自动重试或切换模型。切换路由需在本机 `.env` 设置 `MODEL_POLICY`、`MODEL_NAME`、`MODEL_BASE_URL`、`MODEL_API_KEY` 并重建 Worker；配置本身不会启动模型评测。
 
 ### 2026-09-22 冻结小样本
 
@@ -229,7 +229,7 @@ image 任务先将一次性容器中的仓库还原到指定 `base_commit`，再
 
 成功与失败运行均汇总轨迹中的用量，包括格式错误回复。`usage_status` 区分完整、部分与不可用；部分记录只是已知 token 的小计，不代表整次运行消耗。基线报告同时列出完整覆盖的运行数。格式重试提示包含正确的命令块示例，连续三次格式错误仍会停止。
 
-当前只面向单用户本机运行。用户登录、S3 工件存储与大规模 SWE-bench 评测尚未完成；独立 Reviewer 与 OTel trace 已实现，已有一次小样本配对，未观察到 resolved 率提升，trace 也只在配置了 OTLP 端点时开启。任务失联会按已登记检查点自动重排队（最多 3 次），超过上限或没有可用检查点时停在中断；审批策略是确定性写命令解析，不是完备的能力模型，沙箱、允许路径校验与独立验收仍是实际边界。Redis 用于共享模型并发配额，仅在 Compose 内部可达。没有用户体系，审批接口与任务接口一样只对本机开放。固定测试验收不保证任意对抗代码无法干扰测试进程。SWE-bench 已在一个 10 实例样本上通过官方 harness 得到 3/10 resolved（另有 2 个实例因本机环境单列），尚未进行可代表总体的固定子集或全量评测；`scripts/swebench.py preflight` 会如实报出其他实例所需的包、缓存镜像与磁盘余量。live 运行使用配置里的模型凭据；**返回 200 不等于免费**；免费白名单以用户最新额度表和 `model_policy.py` 为准，清单外模型禁止调用。当前按用户要求暂停消耗额度的评测。
+当前只面向单用户本机运行。用户登录、S3 工件存储与大规模 SWE-bench 评测尚未完成；独立 Reviewer 与 OTel trace 已实现，已有一次小样本配对，未观察到 resolved 率提升，trace 也只在配置了 OTLP 端点时开启。任务失联会按已登记检查点自动重排队（最多 3 次），超过上限或没有可用检查点时停在中断；审批策略是确定性写命令解析，不是完备的能力模型，沙箱、允许路径校验与独立验收仍是实际边界。Redis 用于共享模型并发配额，仅在 Compose 内部可达。没有用户体系，审批接口与任务接口一样只对本机开放。固定测试验收不保证任意对抗代码无法干扰测试进程。SWE-bench 已在一个 10 实例样本上通过官方 harness 得到 3/10 resolved（另有 2 个实例因本机环境单列），尚未进行可代表总体的固定子集或全量评测；`scripts/swebench.py preflight` 会如实报出其他实例所需的包、缓存镜像与磁盘余量。live 运行使用配置里的模型凭据；**返回 200 不等于免费**；路由按 `MODEL_POLICY` 明确选择。当前按用户要求暂停消耗额度的评测。
 
 ## 停止
 

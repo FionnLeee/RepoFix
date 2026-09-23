@@ -15,7 +15,7 @@ from pathlib import Path
 import swebench as cli
 import swebench_subset as subset
 from repopilot import swebench
-from repopilot.model_policy import require_free_model
+from repopilot.model_policy import require_authorized_model
 
 
 def sha(value):
@@ -34,7 +34,10 @@ def worker_config():
     configs = []
     for item in docker_json("inspect", *ids):
         env = dict(value.split("=", 1) for value in item["Config"]["Env"])
-        configs.append({"image": item["Image"], "model": require_free_model(env["MODEL_NAME"]),
+        policy = env.get("MODEL_POLICY", "free-quota")
+        configs.append({"image": item["Image"], "model": require_authorized_model(
+                            env["MODEL_NAME"], env["MODEL_BASE_URL"], policy), "model_policy": policy,
+                        "thinking": "disabled" if policy == "official-deepseek" else "provider-default",
                         "endpoint_sha256": hashlib.sha256(env["MODEL_BASE_URL"].encode()).hexdigest()})
     if any(item != configs[0] for item in configs):
         raise ValueError("Workers have different images/model configurations")

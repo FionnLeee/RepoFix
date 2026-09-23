@@ -15,7 +15,7 @@ import json
 import os
 import re
 
-from repopilot.model_policy import require_free_model
+from repopilot.model_policy import request_options
 
 SEVERITIES = ("blocking", "major", "minor")
 BLOCKING_SEVERITIES = ("blocking",)
@@ -207,10 +207,10 @@ class ModelReviewer:
     def complete(self, messages):
         import litellm
 
-        require_free_model(self.name)
+        options = request_options(self.name, self.api_base)
         response = litellm.completion(model=f"openai/{self.name}", messages=messages, api_base=self.api_base,
                                       api_key=self.api_key, timeout=self.timeout, num_retries=0,
-                                      max_tokens=self.max_tokens, temperature=self.temperature)
+                                      max_tokens=self.max_tokens, temperature=self.temperature, **options)
         message = response.choices[0].message
         try:
             cost = float(litellm.completion_cost(response, model=f"openai/{self.name}") or 0.)

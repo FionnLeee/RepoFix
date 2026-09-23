@@ -86,6 +86,7 @@ services:
       CONTROL_API_URL: http://api:3101
       WORKER_TOKEN: ${WORKER_TOKEN}
       MODEL_NAME: ${MODEL_NAME:-}
+      MODEL_POLICY: ${MODEL_POLICY:-free-quota}
       MODEL_BASE_URL: ${MODEL_BASE_URL:-}
       OPENAI_API_KEY: ${MODEL_API_KEY:-}
       SANDBOX_IMAGE: python:3.12-slim

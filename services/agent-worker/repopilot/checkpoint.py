@@ -52,6 +52,7 @@ class AgentState(BaseModel):
     model_cursor: int | None = Field(default=None, ge=-1)
     context_state: dict = Field(default_factory=dict)
     review_rounds: int = Field(default=0, ge=0)
+    review_state: dict = Field(default_factory=dict)
 
 
 class Checkpoint(BaseModel):
@@ -151,6 +152,7 @@ class CheckpointStore:
             model_cursor=agent.model.current_index if isinstance(agent.model, DeterministicModel) else None,
             context_state=agent.context_manager.state if agent.context_manager else {},
             review_rounds=agent.review_rounds,
+            review_state=agent.review_state,
         )
         checkpoint = Checkpoint(
             schema_version=1, id=uuid.uuid4().hex, binding=self.binding, phase=phase,

@@ -77,6 +77,37 @@ def test_redis_failure_does_not_remove_the_limit(tmp_path):
     assert agent.n_calls == 0
 
 
+def test_official_flash_route_is_explicit_and_disables_thinking(monkeypatch):
+    import litellm
+    from repopilot.model_policy import require_authorized_model
+    from repopilot.review import ModelReviewer
+    from repopilot.runtime import SafeModel
+
+    monkeypatch.setenv("MODEL_POLICY", "official-deepseek")
+    calls = []
+
+    def completion(**kwargs):
+        calls.append(kwargs)
+        return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content='{"findings":[]}'))],
+                               usage=None)
+
+    monkeypatch.setattr(litellm, "completion", completion)
+    monkeypatch.setattr(litellm, "completion_cost", lambda *_args, **_kwargs: 0)
+    endpoint = "https://api.deepseek.com"
+    assert require_authorized_model("deepseek-flash", endpoint) == "deepseek-flash"
+    with pytest.raises(ValueError, match="Official DeepSeek route"):
+        require_authorized_model("deepseek-v4-pro", endpoint)
+    with pytest.raises(ValueError, match="Official DeepSeek route"):
+        require_authorized_model("deepseek-flash", "https://example.invalid")
+
+    ModelReviewer("deepseek-flash", endpoint, "test-only").complete([])
+    SafeModel(model_name="openai/deepseek-flash", model_kwargs={"api_base": endpoint})._query([])
+    assert len(calls) == 2
+    assert all(call["model"] == "openai/deepseek-flash" and call["api_base"] == endpoint for call in calls)
+    assert all(call["num_retries"] == 0 and call["extra_body"] == {"thinking": {"type": "disabled"}}
+               for call in calls)
+
+
 @pytest.mark.parametrize("answer", ["invalid", '{"summary":"missing findings"}', '{"findings":null}'])
 def test_invalid_review_is_failed_at_the_orchestrator_not_clean(tmp_path, monkeypatch, answer):
     monkeypatch.setattr(review, "reviewer_for", lambda *args: SimpleNamespace(
@@ -217,3 +248,38 @@ def test_unverified_when_rounds_run_out_before_a_re_review(tmp_path, monkeypatch
     # reviewer said (open), never the coder's "fixed".
     assert len(reviews) == 2 and unresolved == 1
     assert dispositions[0]["coder"]["status"] == "fixed" and dispositions[0]["outcome"] == "unverified"
+
+
+def test_failed_revision_keeps_findings_and_coder_reply_in_failure_result(tmp_path, monkeypatch):
+    import json
+    import uuid
+
+    from repopilot.reporting import failure_result
+
+    run = {"id": str(uuid.uuid4()), "mode": "demo", "task": "fix"}
+    monkeypatch.setenv("ARTIFACT_ROOT", str(tmp_path))
+    folder = tmp_path / run["id"]
+    agent = agent_at(folder)
+    monkeypatch.setattr(review, "reviewer_for", lambda *args: SimpleNamespace(
+        complete=lambda _: {"content": json.dumps({"findings": [
+            {"file": "a.py", "line": 1, "severity": "blocking", "finding": "wrong"}]}), "cost": 0}))
+
+    def failed_revision(*_):
+        agent.add_messages({"role": "assistant", "content": "REVIEW-RESPONSE 1: rejected - test proves it"})
+        # Simulate managed context pruning: archived messages must keep the response.
+        agent.messages = [{"role": "user", "content": "compressed"}]
+        return {"exit_status": "LimitsExceeded"}
+
+    monkeypatch.setattr(agent, "revise", failed_revision)
+    with pytest.raises(RuntimeError, match="LimitsExceeded") as error:
+        review_before_acceptance(agent, run, SPEC_FOR_FAILURE,
+            SimpleNamespace(execute=lambda _: {"output": "ok"}),
+            lambda: ({"a.py": "x=1"}, ["a.py"], "patch"), None, lambda *_: None, "fix")
+    result = failure_result(run, error.value)
+    assert len(result["review"]["reviews"]) == 1
+    assert result["review"]["dispositions"][0]["coder"]["note"] == "test proves it"
+    assert result["review"]["dispositions"][0]["outcome"] == "unverified"
+    assert result["review"]["unresolved_blocking"] == 1
+
+
+SPEC_FOR_FAILURE = SimpleNamespace(allowedPaths=["a.py"], testCommand="test")

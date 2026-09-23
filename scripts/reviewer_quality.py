@@ -10,7 +10,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from repopilot import review
-from repopilot.model_policy import require_free_model
+from repopilot.model_policy import require_authorized_model
 from repopilot.quota import ModelQuota
 
 
@@ -18,7 +18,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--out", required=True, type=Path)
     args = parser.parse_args()
-    model = require_free_model(os.environ["MODEL_NAME"])
+    model = require_authorized_model(os.environ["MODEL_NAME"], os.environ.get("MODEL_BASE_URL", ""))
     cases = []
     for name, task, old, clean, broken in [
         ("shipping", "shipping(total) returns 0 when total >= 150, otherwise 10.",

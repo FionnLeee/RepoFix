@@ -27,7 +27,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "services/agent-worker"))
 from repopilot import swebench  # noqa: E402
-from repopilot.model_policy import FREE_MODELS  # noqa: E402
+from repopilot.model_policy import require_authorized_model  # noqa: E402
 
 API = os.getenv("CONTROL_API_URL", "http://localhost:3101")
 CACHE = Path(os.getenv("SWEBENCH_CACHE", str(ROOT / "runtime" / "swebench")))
@@ -152,11 +152,14 @@ def preflight():
     # The endpoint's catalogue lists what can be called, not what is free: only the model names
     # the account's own quota page covers are free, and everything else is billed by usage.
     model = configured_model()
-    free_names = sorted(FREE_MODELS)
-    check("live_model_name", model in free_names,
-          f"MODEL_NAME={model} 在免费清单里" if model in free_names else
-          f"MODEL_NAME={model} 不在免费清单（{', '.join(free_names)}）里；能调用不等于免费，"
-          "以账号额度页为准")
+    from dotenv import dotenv_values
+    settings = dotenv_values(ROOT / ".env")
+    policy = settings.get("MODEL_POLICY", "free-quota")
+    try:
+        require_authorized_model(model, settings.get("MODEL_BASE_URL", ""), policy)
+        check("live_model_name", True, f"MODEL_NAME={model}；授权策略={policy}（official-deepseek 按官方价格计费）")
+    except ValueError as error:
+        check("live_model_name", False, str(error))
     code, listing = docker_out("images", "--filter", "reference=swebench/sweb.eval.*", "--format", "{{.Size}}")
     free = shutil.disk_usage(ROOT).free / 1e9
     check("disk_headroom", free >= 10,

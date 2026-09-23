@@ -16,7 +16,7 @@ from minisweagent.models.litellm_textbased_model import LitellmTextbasedModel
 from minisweagent.models.test_models import DeterministicModel, make_output
 
 from repopilot.fixture import DEVELOPMENT_TESTS, FIXED, SOURCE, VERIFICATION_TESTS
-from repopilot.model_policy import require_free_model
+from repopilot.model_policy import request_options, require_authorized_model
 from repopilot.policy import evaluate as evaluate_policy
 from repopilot.quota import QuotaTimeout, QuotaUnavailable
 from repopilot.reporting import usage_summary
@@ -178,12 +178,15 @@ class Sandbox:
 
 
 class SafeModel(LitellmTextbasedModel):
+    # The upstream retry loop must not multiply a single budgeted model call.
+    abort_exceptions = [Exception, KeyboardInterrupt]
+
     def _query(self, messages, **kwargs):
-        require_free_model(self.config.model_name)
-        return super()._query(messages, **kwargs)
+        options = request_options(self.config.model_name, self.config.model_kwargs.get("api_base", ""))
+        return super()._query(messages, **(kwargs | options | {"num_retries": 0}))
 
     def __init__(self, **kwargs):
-        require_free_model(kwargs.get("model_name", ""))
+        require_authorized_model(kwargs.get("model_name", ""), kwargs.get("model_kwargs", {}).get("api_base", ""))
         kwargs.setdefault("format_error_template", (
             "Expected exactly one executable action; found {{actions|length}}. "
             "Reply with one command in this exact format:\n"
@@ -221,6 +224,7 @@ class TracedAgent(DefaultAgent):
         self.resume_action = None
         self.pending_approval = None
         self.review_rounds = 0
+        self.review_state = {}
         self.tracing = None
         self.quota = None
         self._quota_fallback = False
@@ -257,6 +261,8 @@ class TracedAgent(DefaultAgent):
         self.n_calls, self.cost = state.model_calls, state.cost
         self.n_consecutive_format_errors = state.consecutive_format_errors
         self.review_rounds = state.review_rounds
+        self.review_state = state.review_state
+        self.persist_review()
         self.env.index = state.tool_calls
         self._start_time = time.time() - state.active_seconds
         if self.context_manager:
@@ -331,8 +337,26 @@ class TracedAgent(DefaultAgent):
     def revise(self, task, message):
         """Continue the same attempt with one extra observation, without resetting history."""
         self.add_messages(self.model.format_message(role="user", content=message))
+        # Publish the verdict and revision prompt together before a new model request.
+        self.save(self.config.output_path)
         self._restored = True
         return self.run(task)
+
+    def persist_review(self):
+        if not self.review_state:
+            return
+        from repopilot import review
+        from repopilot.checkpoint import atomic_json
+
+        state = self.review_state
+        if state.get("phase") == "revising":
+            responses = review.coder_responses(self.full_messages[state["response_start"]:], len(state["previous"]))
+            for finding in state["previous"]:
+                finding["coder"] = responses[finding["id"]]
+        report = {key: state[key] for key in ("policy", "budget", "max_rounds", "reviews", "unresolved_blocking")}
+        report.update(rounds=self.review_rounds, phase=state["phase"],
+                      dispositions=state["dispositions"] + review.dispositions(state["previous"]))
+        atomic_json(self.config.output_path.parent / "review.json", report)
 
     def record_review(self, review):
         """A review is a model call of this run: it shares the coder's budget and history."""
@@ -383,6 +407,7 @@ class TracedAgent(DefaultAgent):
                 DefaultAgent.save(self, self.config.output_path)
 
     def save(self, path, *extra_dicts):
+        self.persist_review()
         data = super().save(path, *extra_dicts)
         if self.checkpoints and self._checkpoint_safe:
             status = self.messages[-1].get("extra", {}).get("exit_status")

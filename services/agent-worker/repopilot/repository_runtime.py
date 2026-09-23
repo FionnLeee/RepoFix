@@ -187,20 +187,40 @@ def review_before_acceptance(agent, run, spec, sandbox, snapshot, tracing, emit,
     touches, and its patch. A review that cannot be produced is reported rather than being
     treated as a clean candidate.
     """
-    reviews, reviewed_sha, unresolved, dispositions, previous = [], None, 0, [], []
+    if not agent.review_state:
+        agent.review_state = {"reviews": [], "reviewed_sha": None, "unresolved_blocking": 0,
+                              "dispositions": [], "previous": [], "phase": "reviewing",
+                              "policy": review.policy(run), "budget": run.get("reviewBudget", "extra"),
+                              "max_rounds": review.max_rounds(run)}
+    state = agent.review_state
+    agent.persist_review()
+    reviews, dispositions, previous = state["reviews"], state["dispositions"], state["previous"]
+    reviewed_sha, unresolved = state["reviewed_sha"], state["unresolved_blocking"]
+    # run() has finished the restored revision; its archived replies survive context compaction.
+    state["phase"] = "reviewing"
+
+    def persist():
+        state.update(reviewed_sha=reviewed_sha, unresolved_blocking=unresolved)
+        agent.persist_review()
+
+    def record_dispositions(records):
+        dispositions.extend(records)
+        if records:
+            emit("REVIEW_DISPOSITIONS", {"review_round": records[0]["review_round"], "records": records})
 
     def settle(reviewer_previous=None):
         """Close the open findings of the last round; without a reviewer verdict they stay unverified."""
         if previous:
             records = review.dispositions(previous, reviewer_previous)
-            dispositions.extend(records)
-            emit("REVIEW_DISPOSITIONS", {"review_round": previous[0]["review_round"], "records": records})
+            record_dispositions(records)
             previous.clear()
             return records
         return []
 
     def done():
         settle()
+        state["phase"] = "complete"
+        persist()
         return reviews, unresolved, dispositions, candidate, changed, patch
 
     while True:
@@ -259,29 +279,33 @@ def review_before_acceptance(agent, run, spec, sandbox, snapshot, tracing, emit,
                                   "invalid_count": verdict["invalid_count"], "parse_error": verdict["parse_error"]})
         blocking = review.blocking(verdict["findings"])
         advisory = [finding for finding in verdict["findings"] if finding not in blocking]
-        dispositions.extend(review.dispositions([
+        record_dispositions(review.dispositions([
             {"id": index, "review_round": review_record["round"], **finding}
             for index, finding in enumerate(advisory, start=len(blocking) + 1)]))
         unresolved = max(len(blocking), sum(record["outcome"] in ("unresolved", "unverified") for record in settled))
         if not blocking:
             return done()
         if agent.review_rounds >= review.max_rounds(run):
-            dispositions.extend(review.dispositions([
+            record_dispositions(review.dispositions([
                 {"id": index, "review_round": review_record["round"], **finding}
                 for index, finding in enumerate(blocking, start=1)]))
             emit("REVIEW_UNRESOLVED", {"round": review_record["round"], "findings": blocking,
                                        "reason": f"已完成 {review.max_rounds(run)} 轮有限修订，评审仍有阻断项，交由独立验收判定。"})
             return done()
         agent.review_rounds += 1
+        previous.extend({"id": index, "review_round": review_record["round"], **finding}
+                        for index, finding in enumerate(blocking, start=1))
+        state.update(phase="revising", response_start=len(agent.full_messages))
+        persist()
         emit("REVISION_REQUESTED", {"round": agent.review_rounds, "review_round": review_record["round"],
                                     "findings": blocking})
-        first_new_message = len(agent.messages)
-        outcome = agent.revise(instruction, review.render_for_coder(blocking))
+        try:
+            outcome = agent.revise(instruction, review.render_for_coder(blocking))
+        finally:
+            persist()
         if outcome.get("exit_status") != "Submitted":
             raise RuntimeError(f"Agent stopped during revision: {outcome.get('exit_status')}")
-        responses = review.coder_responses(agent.messages[first_new_message:], len(blocking))
-        previous = [{"id": index, "review_round": review_record["round"], "coder": responses[index], **finding}
-                    for index, finding in enumerate(blocking, start=1)]
+        state["phase"] = "reviewing"
 
 
 def execute_image_repository_run(run, spec, emit, cancelled, control=None, quota=None, tracing=None):

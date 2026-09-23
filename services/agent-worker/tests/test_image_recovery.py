@@ -115,3 +115,82 @@ def test_prepared_image_is_reset_to_dataset_base_before_agent_reads(image):
         assert image_workspace.capture(sandbox, True) == b""
     finally:
         sandbox.close()
+
+
+@pytest.mark.docker
+def test_image_revision_recovery_preserves_review_ledger_and_shared_budget(image, tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from repopilot import review
+    from repopilot.repository_runtime import review_before_acceptance
+
+    monkeypatch.setenv("ARTIFACT_ROOT", str(tmp_path))
+    run = {"id": str(uuid.uuid4()), "generation": 1, "task": "fix", "mode": "demo", "reviewBudget": "shared"}
+    folder = tmp_path / run["id"]
+    folder.mkdir()
+    outputs = [make_output("edit", [{"command": "echo wrong > old.py"}]),
+               make_output("submit", [{"command": "echo COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT"}]),
+               make_output("REVIEW-RESPONSE 1: fixed - changed old.py", [{"command": "echo fixed > old.py"}]),
+               make_output("submit", [{"command": "echo COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT"}])]
+    answers = iter([
+        {"findings": [{"file": "old.py", "line": 1, "severity": "blocking", "finding": "wrong"}]},
+        {"findings": [], "previous": [{"id": 1, "status": "fixed", "note": "verified fixed content"}]},
+    ])
+    requests = []
+
+    def complete(messages):
+        requests.append(messages)
+        return {"content": json.dumps(next(answers)), "cost": 0}
+
+    monkeypatch.setattr(review, "reviewer_for", lambda *args: SimpleNamespace(complete=complete))
+
+    class LostWorker(BaseException):
+        pass
+
+    class InterruptedAgent(TracedAgent):
+        def save(self, path, *extra):
+            result = super().save(path, *extra)
+            if self.n_calls == 4:
+                raise LostWorker()
+            return result
+
+    def build(cls, generation):
+        sandbox = Sandbox(run["id"], lambda *_: None, threading.Event(), files={}, image=image,
+                          workspace="/testbed", writable=True, user="0:0")
+        source = image_workspace.initialize(sandbox)
+        agent = cls(DeterministicModel(outputs=outputs), sandbox, emit=lambda *_: None,
+                    cancelled=threading.Event(), system_template="", instance_template="{{task}}",
+                    step_limit=6, cost_limit=0, output_path=folder / "trajectory.json")
+        agent.enable_checkpoints({**run, "generation": generation}, source)
+        return agent, sandbox
+
+    def review_loop(agent, sandbox):
+        return review_before_acceptance(agent, run, SimpleNamespace(allowedPaths=[], testCommand="true"),
+            sandbox, lambda: image_workspace.candidate(sandbox, folder), None, lambda *_: None, "fix")
+
+    first, sandbox = build(InterruptedAgent, 1)
+    try:
+        assert first.run("fix")["exit_status"] == "Submitted"
+        with pytest.raises(LostWorker):
+            review_loop(first, sandbox)
+        reference = first.checkpoints.latest
+        checkpoint = first.checkpoints.load(reference, for_resume=True)
+        assert checkpoint.state.review_state["phase"] == "revising"
+        assert checkpoint.state.review_state["previous"][0]["coder"]["status"] == "fixed"
+    finally:
+        sandbox.close()
+    resumed, sandbox = build(TracedAgent, 2)
+    try:
+        image_workspace.restore(sandbox, checkpoint.files)
+        resumed.restore_checkpoint(reference, allow_previous_generation=True)
+        assert resumed.n_calls == 4 and resumed.review_rounds == 1
+        assert resumed.run("fix")["exit_status"] == "Submitted"
+        reviews, unresolved, dispositions, *_ = review_loop(resumed, sandbox)
+        assert len(reviews) == 2 and len(requests) == 2 and resumed.n_calls == 6
+        assert unresolved == 0 and len(dispositions) == 1
+        assert dispositions[0]["outcome"] == "fixed"
+        assert dispositions[0]["coder"]["note"] == "changed old.py"
+        assert "changed old.py" in requests[1][1]["content"]
+        assert json.loads((folder / "review.json").read_text())["phase"] == "complete"
+    finally:
+        sandbox.close()

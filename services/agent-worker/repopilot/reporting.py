@@ -57,6 +57,10 @@ def failure_result(run, error):
         result.update(usage=None, usage_status="unavailable", model_calls=None)
     folder = Path(os.getenv("ARTIFACT_ROOT", "runtime/artifacts")) / str(UUID(run["id"]))
     try:
+        result["review"] = json.loads((folder / "review.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        pass
+    try:
         folder.mkdir(parents=True, exist_ok=True)
         (folder / "result.json").write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
     except OSError:

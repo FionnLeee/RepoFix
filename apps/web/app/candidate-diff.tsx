@@ -18,6 +18,9 @@ type Candidate = {
   omitted_files: number;
   base: Record<string, string>;
   candidate: Record<string, string>;
+  file_artifacts?: { path: string; status: string;
+    base: { sha256: string; bytes: number } | null;
+    candidate: { sha256: string; bytes: number } | null }[];
 };
 
 // Monaco is a client-only dependency; the version is pinned so the workbench renders the same
@@ -36,6 +39,8 @@ export function CandidateDiff({ runId, findings, patch }: { runId: string; findi
   useEffect(() => {
     let cancelled = false;
     setState("loading");
+    setData(null);
+    setSelected(undefined);
     fetch(`/api/runs/${runId}/candidate`, { cache: "no-store" })
       .then((response) => (response.ok ? response.json() : Promise.reject(new Error(String(response.status)))))
       .then((candidate: Candidate) => {
@@ -85,7 +90,9 @@ export function CandidateDiff({ runId, findings, patch }: { runId: string; findi
 
   // The findings are the review's own output: they are shown whether or not the editor loaded,
   // so a missing CDN degrades the diff and never hides the review.
-  const ready = state === "diff" && !!data && data.changed_files.length > 0;
+  const ready = !!data && data.changed_files.length > 0;
+  const artifact = data?.file_artifacts?.find(file => file.path === selected);
+  const hasPreview = !!selected && !!data && selected in data.base && selected in data.candidate;
   return (
     <div className="candidate-diff">
       {ready && <>
@@ -100,8 +107,20 @@ export function CandidateDiff({ runId, findings, patch }: { runId: string; findi
             </button>
           ))}
         </div>
-        {data!.omitted_files > 0 && <p className="empty-inline">{data!.omitted_files} 个文件超过内联查看上限，未在此展示。</p>}
-        <DiffEditor
+        {data!.omitted_files > 0 && <p className="empty-inline">{data!.omitted_files} 个文件为二进制、路径不适合预览或超过内联查看上限。</p>}
+        {artifact && <div className="artifact-downloads">
+          <p>{({ added: "新增文件", deleted: "删除文件", modified: "修改文件" } as Record<string, string>)[artifact.status] || artifact.status} · {selected}</p>
+          {(["base", "candidate"] as const).map(side => {
+            const blob = artifact[side];
+            const label = side === "base" ? "基准" : "候选";
+            return <p key={side}>{blob
+              ? <a href={`/api/runs/${runId}/artifacts/${blob.sha256}`} download={`${side}-${selected?.split("/").pop()}`}
+                   title={`SHA-256: ${blob.sha256}`}>下载{label}原始文件（{blob.bytes.toLocaleString()} 字节）</a>
+              : <span>{label}版本中不存在此文件</span>}</p>;
+          })}
+        </div>}
+        {!hasPreview && <p className="empty-inline">此文件不提供文本预览，请下载原始文件查看。</p>}
+        {hasPreview && state === "diff" && <DiffEditor
           key={selected}
           original={selected ? data!.base[selected] ?? "" : ""}
           modified={selected ? data!.candidate[selected] ?? "" : ""}
@@ -111,7 +130,7 @@ export function CandidateDiff({ runId, findings, patch }: { runId: string; findi
           onMount={onMount}
           options={{ readOnly: true, renderSideBySide: true, minimap: { enabled: false }, glyphMargin: true,
                      renderOverviewRuler: false, scrollBeyondLastLine: false, fontSize: 12, automaticLayout: true }}
-        />
+        />}
       </>}
       {state === "loading" && <p className="empty-inline">正在加载候选版本…</p>}
       {state === "diff" && data && data.changed_files.length === 0
