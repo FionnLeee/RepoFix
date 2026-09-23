@@ -164,7 +164,7 @@ def replay_patch(original, patch, folder):
 
 # A snapshot task needs a handful of steps; a real repository needs an exploration budget.
 STEP_LIMIT = 20
-IMAGE_STEP_LIMIT = 60
+IMAGE_STEP_LIMIT = int(os.getenv("IMAGE_STEP_LIMIT", "60"))
 REVISION_STEPS = 5
 WALL_TIME_SECONDS = 900
 

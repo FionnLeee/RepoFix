@@ -100,6 +100,7 @@ services:
       EMBEDDING_MODEL_DIR: /embedding-model
       CONTEXT_WINDOW_TOKENS: ${CONTEXT_WINDOW_TOKENS:-16384}
       CONTEXT_OUTPUT_TOKENS: ${CONTEXT_OUTPUT_TOKENS:-1600}
+      IMAGE_STEP_LIMIT: ${IMAGE_STEP_LIMIT:-60}
       CONTEXT_SAFETY_TOKENS: ${CONTEXT_SAFETY_TOKENS:-1024}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
