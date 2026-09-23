@@ -43,12 +43,13 @@ def rel(path):
     return str(Path(path).resolve().relative_to(ROOT)).replace("\\", "/")
 
 
-def harness(instance_ids, predictions, run_id, extra=(), report_dir=None):
+def harness(instance_ids, predictions, run_id, extra=(), report_dir=None, dataset_json=None):
     """Run the official harness in its Linux container over the given instances."""
     report_dir = report_dir or VALIDATION
+    dataset_json = Path(dataset_json) if dataset_json else ROOT / "runtime/swebench/swe-bench-lite-test.json"
     command = ["docker", "run", "--rm", "-v", "/var/run/docker.sock:/var/run/docker.sock",
                "-v", f"{ROOT}:/work", "-w", "/work", HARNESS_IMAGE,
-               "--dataset_name", "runtime/swebench/swe-bench-lite-test.json",
+               "--dataset_name", rel(dataset_json),
                "--predictions_path", rel(predictions), "--max_workers", "1", "--run_id", run_id,
                "--instance_ids", *instance_ids, "--report_dir", rel(report_dir), *extra]
     print(f"[harness] {run_id}: {len(instance_ids)} instance(s)", flush=True)

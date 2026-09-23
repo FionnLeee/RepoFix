@@ -44,7 +44,7 @@ def worker_config():
     return configs[0]
 
 
-def freeze(instances, folder):
+def freeze(instances, folder, dataset_json=None):
     if len(set(instances)) != len(instances):
         raise ValueError("Duplicate instances")
     config = worker_config()
@@ -57,8 +57,13 @@ def freeze(instances, folder):
         cases.append({"instance_id": instance, "payload": payload, "payload_sha256": sha(payload),
                       "image_id": image, "order": ["off", "auto"] if index % 2 == 0 else ["auto", "off"],
                       "request_keys": {arm: str(uuid.uuid4()) for arm in ("off", "auto")}})
+    dataset_json = Path(dataset_json or cli.CACHE / "swe-bench-lite-test.json").resolve()
+    if not dataset_json.is_file():
+        raise ValueError(f"Dataset missing: {dataset_json}")
     frozen = {"schema": 1, "batch_id": folder.name, "created_at": time.time(), "worker": config,
-              "selection": "explicit locally cached SWE-bench Lite instance images, convenience sample",
+              "selection": "predeclared instance IDs from local benchmark dataset; no gold screening",
+              "dataset_json": str(dataset_json),
+              "dataset_sha256": hashlib.sha256(dataset_json.read_bytes()).hexdigest(),
               "gold_screening": False, "hidden_test_hints": False, "memory_enabled": False,
               "shared_limits": {"total_coder_reviewer_calls": 60, "wall_seconds": 900,
                                 "max_output_tokens_per_call": 1600},
@@ -73,6 +78,8 @@ def execute(folder):
     frozen = json.loads((folder / "frozen.json").read_text(encoding="utf-8"))
     if worker_config() != frozen["worker"]:
         raise ValueError("Deployed model/image differs from frozen manifest")
+    if frozen.get("dataset_json") and hashlib.sha256(Path(frozen["dataset_json"]).read_bytes()).hexdigest() != frozen["dataset_sha256"]:
+        raise ValueError("Dataset differs from frozen manifest")
     target = folder / "manifest.json"
     report = json.loads(target.read_text(encoding="utf-8")) if target.exists() else {
         "batch_id": frozen["batch_id"], "frozen_sha256": sha(frozen), "attempts": [], "arms": {}}
@@ -134,6 +141,14 @@ def judge(folder):
     report = json.loads(target.read_text(encoding="utf-8"))
     if report["frozen_sha256"] != sha(frozen):
         raise ValueError("Frozen manifest changed")
+    dataset_path = Path(frozen.get("dataset_json") or cli.CACHE / "swe-bench-lite-test.json")
+    if dataset_path.name == "swe-bench-verified-mini-test.json":
+        provenance = json.loads((dataset_path.parent / "verified-mini-harness-augmentation.json").read_text(encoding="utf-8"))
+        if provenance["raw_sha256"] != frozen["dataset_sha256"] or provenance["source_field_differences"]:
+            raise ValueError("Verified Mini / official metadata mapping differs from frozen dataset")
+        dataset_path = dataset_path.with_name("swe-bench-verified-mini-test-harness.json")
+        if hashlib.sha256(dataset_path.read_bytes()).hexdigest() != provenance["augmented_sha256"]:
+            raise ValueError("Official harness metadata file changed")
     instances = [case["instance_id"] for case in frozen["cases"]]
     for arm in ("off", "auto"):
         if arm in report["arms"]:
@@ -145,9 +160,11 @@ def judge(folder):
         predictions, skipped, bindings = swebench.batch_predictions({row["instance_id"]: row["run_id"] for row in rows}, cli.api)
         prediction_path = folder / (arm + ".jsonl")
         prediction_path.write_text("".join(json.dumps(row) + "\n" for row in predictions), encoding="utf-8")
-        arm_report = {"batch_id": frozen["batch_id"] + "-" + arm, "bindings": bindings, "skipped": skipped}
+        arm_report = {"batch_id": frozen["batch_id"] + "-" + arm, "bindings": bindings, "skipped": skipped,
+                      "harness_dataset_sha256": hashlib.sha256(dataset_path.read_bytes()).hexdigest()}
         (folder / (arm + "-bindings.json")).write_text(json.dumps(arm_report, indent=2), encoding="utf-8")
-        verdict = subset.harness(instances, prediction_path, arm_report["batch_id"], report_dir=folder)
+        verdict = subset.harness(instances, prediction_path, arm_report["batch_id"], report_dir=folder,
+                                 dataset_json=dataset_path)
         arm_report["verdict"] = verdict
         report["arms"][arm] = arm_report
         target.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -159,11 +176,12 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--freeze", nargs="+")
     parser.add_argument("--folder", type=Path, required=True)
+    parser.add_argument("--dataset-json", type=Path)
     parser.add_argument("--run", action="store_true")
     parser.add_argument("--judge-only", action="store_true")
     args = parser.parse_args()
     if args.freeze:
-        freeze(args.freeze, args.folder)
+        freeze(args.freeze, args.folder, args.dataset_json)
     if args.run:
         execute(args.folder)
     elif args.judge_only:

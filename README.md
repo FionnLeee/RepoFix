@@ -237,11 +237,24 @@ image 任务先将一次性容器中的仓库还原到指定 `base_commit`，再
 
 ### 2026-09-23 面试向补充评测
 
-在用户指定的北京时间 12:00—14:00 窗口内，完成另三例 SWE-bench Lite 便利样本的冻结配对与官方 harness：`pallets__flask-4045`、`pallets__flask-4992`、`psf__requests-1963`。选择清单先于模型调用写入 `runtime/validation/interview-20260923-holdout-selection.json`，冻结目录为 `runtime/validation/frozen-20260923-interview-holdout-three-paired/`。仍使用完整上下文、记忆关闭、无 gold 文件/测试提示、Reviewer 开关各一组，共享最多 60 次 Coder+Reviewer 调用与 900 秒墙钟。六次 Agent 运行均交付非空补丁，但官方结果为 **关闭 1/3、开启 0/3 resolved**，只有 Requests 关闭组通过。关闭组 58 次模型调用、240,398 已报告 token；开启组 83 次、381,936 token。开启组四条 Reviewer 意见处置均为 `unverified`，一个阻断项未闭环；本小样本不能证明 Reviewer 提升，实际 token 也不相等。没有继续扩样。
+在用户指定的北京时间 12:00—14:00 窗口内，完成另三例 SWE-bench Lite 便利样本的冻结配对与官方 harness：`pallets__flask-4045`、`pallets__flask-4992`、`psf__requests-1963`。选择清单先于模型调用写入 `runtime/validation/interview-20260923-holdout-selection.json`，冻结目录为 `runtime/validation/frozen-20260923-interview-holdout-three-paired/`。仍使用完整上下文、记忆关闭、无 gold 文件/测试提示、Reviewer 开关各一组，共享最多 60 次 Coder+Reviewer 调用与 900 秒墙钟。六次 Agent 运行均交付非空补丁，但官方结果为 **关闭 1/3、开启 0/3 resolved**，只有 Requests 关闭组通过。关闭组 58 次模型调用、240,398 已报告 token；开启组 83 次、381,936 token。开启组四条 Reviewer 意见处置均为 `unverified`，一个阻断项未闭环；本小样本不能证明 Reviewer 提升，实际 token 也不相等。
 
 同一官方模型上另做四个固定 Reviewer 校准样本：两个已知缺陷都被指出为阻断，两个正确补丁都没有阻断意见；这是微型功能检查，不能估计总体查准/查全。三项自建跨文件任务以 Reviewer 关闭、记忆关闭方式分别运行 `full`、`compact`、`managed` 各三次，并轮换顺序；`scripts/evaluate_baselines.py --live --contexts full compact managed --repeats 3 --review-policy off` 报告在 `runtime/validation/interview-20260923-context/`。三组**各 6/9 独立验收通过**，27 次用量记录全部完整；9 次失败都漏了任务明写的折扣范围校验。已报告输入加输出 token 分别为 **25,827 / 30,397 / 54,724**，平均端到端时长 **11.17 / 11.96 / 12.67 秒**。这三个小任务上 `managed` 没有带来成功数或 token 优势；自建任务显式提供允许路径，不能作为 SWE-bench 成绩。
 
-确定性系统验证另覆盖 7/7 类故障矩阵、交付 6/6、双 Worker 并行 2/2、上下文 smoke 6/6 与 Worker 镜像内上下文检查 7/7；Linux Worker 全套 pytest **114 passed**，API/Web 镜像构建通过。它们是系统行为证据，不计入真实模型解决率。本轮新增 33 次 Agent 运行与四次直接 Reviewer 校准合计 **736,027 个已报告 token**；连同上述两批，累计 **6,315,236 个已报告 token**，低于用户约 20M 总额和 18M 自动停 Worker 阈值。首批三次被拒请求用量未知，累计为可观测下界。运行结束后 Worker 已停止。
+确定性系统验证另覆盖 7/7 类故障矩阵、交付 6/6、双 Worker 并行 2/2、上下文 smoke 6/6 与 Worker 镜像内上下文检查 7/7；Linux Worker 全套 pytest **114 passed**，API/Web 镜像构建通过。它们是系统行为证据，不计入真实模型解决率。截至本节这一批次，新增 33 次 Agent 运行与四次直接 Reviewer 校准合计 **736,027 个已报告 token**；连同上述两批，累计 **6,315,236 个已报告 token**。首批三次被拒请求用量未知，累计为可观测下界。
+
+### 2026-09-23 SWE-bench Verified Mini 固定十题
+
+[Verified Mini](https://github.com/mariushobbhahn/SWEBench-verified-mini) 是第三方从人工筛选的 SWE-bench Verified 500 题中构建的 50 题子集，仅含 Django 与 Sphinx；[Inspect Evals](https://github.com/UKGovernmentBEIS/inspect_evals/blob/main/src/inspect_evals/swe_bench/swe_bench.py) 也提供该子集入口。它适合在本机做更小的仓库修复实验，但不是 SWE-bench 官方排行榜的独立赛道。本次先固定六题，查看官方 verdict 前按固定位置扩为十题（Django/Sphinx 各五），不按 gold 筛题；选择文件为 `runtime/swebench/verified-mini-ten-selection.json`。十题仍不是完整 50 题成绩，也不是随机样本。
+
+保持官方 `deepseek-flash`、同一 Worker 镜像、完整上下文、记忆关闭；Reviewer `off/auto` 各一次，Coder 与 Reviewer 共享 60 次调用、900 秒墙钟和每次 1600 输出 token 上限。Mini 发布集缺少新版 harness 需要的 `eval_script` 等元数据，`scripts/prepare_verified_mini.py` 将其与 [官方 Verified 数据集](https://huggingface.co/datasets/SWE-bench/SWE-bench_Verified) 同 ID 行补齐；题述、基准提交、gold 补丁和测试补丁逐项核对一致。模型运行后才由 SWE-bench 5.0.2 官方 harness 独立验收，元数据不进入 Agent 提示。冻结、精确 run ID、预测和逐例报告留在 `runtime/validation/frozen-20260923-verified-mini-*/`，汇总见 `runtime/validation/verified-mini-ten-summary.json`。
+
+| Reviewer | 官方 resolved | 有补丁 | 空补丁 | 模型调用 | 已报告 token | 意见处置 |
+| --- | ---: | ---: | ---: | ---: | ---: | --- |
+| 关闭 | **4/10** | 6/10 | 4/10 | 371 | 4,058,124 | 不启用 |
+| 开启 | **5/10** | 6/10 | 4/10 | 380 | 4,095,065 | 5 条 `unverified`，无未闭环阻断项 |
+
+两组 20 次运行用量均完整；官方报告的基础设施错误和不确定错误都是零。只有 `django__django-12039` 一题出现关组未通过、开组通过；其余九题两组结论相同。关组与开组各四题无补丁：主要是 60 次调用耗尽，开启组另有一例因后台进程使 image 检查点未达到静稳条件。即使本次开启组多通过一题，十题的非随机小样本不足以证明 Reviewer 普遍提升，也不能与先前 Lite 样本合并为榜单成绩。该批新增 **8,153,189** 个已报告 token；连同前述批次累计 **14,468,425**，低于用户约 20M 总额，且 Worker 已停止、API 的 `LIVE_ENABLED=false`。
 
 `full` 保留完整会话历史。`compact` 在历史超过 3,500 字符且有足够旧消息时，用不超过约 1,200 字符的历史摘录替换较早消息，保留系统规则、原始任务及最近四条消息。完整原始轨迹独立保存，token 汇总使用完整记录，页面显示压缩事件。
 
@@ -251,7 +264,7 @@ image 任务先将一次性容器中的仓库还原到指定 `base_commit`，再
 
 成功与失败运行均汇总轨迹中的用量，包括格式错误回复。`usage_status` 区分完整、部分与不可用；部分记录只是已知 token 的小计，不代表整次运行消耗。基线报告同时列出完整覆盖的运行数。格式重试提示包含正确的命令块示例，连续三次格式错误仍会停止。
 
-当前只面向单用户本机运行。用户登录、S3 工件存储与大规模 SWE-bench 评测尚未完成；独立 Reviewer 与 OTel trace 已实现，小样本配对未观察到 resolved 率提升，trace 也只在配置了 OTLP 端点时开启。任务失联会按已登记检查点自动重排队（最多 3 次），超过上限或没有可用检查点时停在中断；审批策略是确定性写命令解析，不是完备的能力模型，沙箱、允许路径校验与独立验收仍是实际边界。Redis 用于共享模型并发配额，仅在 Compose 内部可达。没有用户体系，审批接口与任务接口一样只对本机开放。固定测试验收不保证任意对抗代码无法干扰测试进程。SWE-bench 已在一个历史十实例样本上通过官方 harness 得到 3/10 resolved（另有 2 个实例因本机环境单列），以及本节无 gold 提示的五实例配对复测和新增三实例配对；它们都不能代表总体成绩。`scripts/swebench.py preflight` 会如实报出其他实例所需的包、缓存镜像与磁盘余量。live 运行使用配置里的模型凭据；**返回 200 不等于免费**；路由按 `MODEL_POLICY` 明确选择。本次评测结束后 Worker 已停止。
+当前只面向单用户本机运行。用户登录、S3 工件存储与大规模 SWE-bench 评测尚未完成；独立 Reviewer 与 OTel trace 已实现，小样本配对结果不一致，尚不能证实 Reviewer 有普遍效果，trace 也只在配置了 OTLP 端点时开启。任务失联会按已登记检查点自动重排队（最多 3 次），超过上限或没有可用检查点时停在中断；审批策略是确定性写命令解析，不是完备的能力模型，沙箱、允许路径校验与独立验收仍是实际边界。Redis 用于共享模型并发配额，仅在 Compose 内部可达。没有用户体系，审批接口与任务接口一样只对本机开放。固定测试验收不保证任意对抗代码无法干扰测试进程。SWE-bench 历史十实例样本经官方 harness 得到 3/10 resolved（另有 2 个实例因本机环境单列）；另有无 gold 提示的 Lite 五实例与三实例配对、Verified Mini 十实例配对，均不能代表总体成绩。`scripts/swebench.py preflight` 会如实报告镜像、磁盘与依赖缺口。live 运行使用配置里的模型凭据；**返回 200 不等于免费**；路由按 `MODEL_POLICY` 明确选择。本次评测结束后 Worker 已停止，API 的 `LIVE_ENABLED=false`。
 
 ## 停止
 
