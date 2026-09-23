@@ -236,6 +236,7 @@ class StubReviewer:
     def complete(self, messages):
         summary, findings = "演示桩：未发现问题。", []
         name = sorted(self.changed)[0] if self.changed else None
+        previous = []
         if self.round_index == 0 and name:
             line = _first_changed_line(self.source.get(name, ""), self.candidate.get(name, ""))
             findings = [{"file": name, "line": line, "severity": "blocking",
@@ -244,7 +245,15 @@ class StubReviewer:
                          "evidence": f"{name} 第 {line} 行与固定基准版本不同",
                          "suggestion": "按反馈做一次有限修订后重新提交"}]
             summary = "演示桩：报告一条阻断项。"
-        return {"content": "```json\n" + json.dumps({"summary": summary, "findings": findings},
+        elif name and messages and "评审修订" in "\n".join(self.candidate.values()):
+            # The demo coder adds this marker only in its revision. Confirm the earlier stub
+            # finding explicitly, as a real reviewer must do for the disposition to close.
+            body = str(messages[-1].get("content", ""))
+            if "Your previous round reported these findings" in body:
+                previous = [{"id": int(match), "status": "fixed", "note": "演示候选包含修订标记"}
+                            for match in re.findall(r"(?m)^(\d+)\. \[", body)]
+        return {"content": "```json\n" + json.dumps({"summary": summary, "findings": findings,
+                                                     "previous": previous},
                                                     ensure_ascii=False) + "\n```", "cost": 0., "usage": None,
                 "reviewer": self.name}
 

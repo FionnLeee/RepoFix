@@ -89,6 +89,16 @@ def test_the_demo_stub_is_labelled_and_reports_only_once():
     assert later["findings"] == []
 
 
+def test_the_demo_stub_confirms_a_revision_in_the_previous_findings_protocol():
+    revised = {**CANDIDATE, "money.py": CANDIDATE["money.py"] + "\n# 评审修订\n"}
+    messages = [{"role": "user", "content": "Your previous round reported these findings; the coder revised and responded:\n"
+                 "1. [blocking] money.py:2 演示用确定性评审桩"}]
+    answer = review.StubReviewer(SOURCE, revised, ["money.py"], 1).complete(messages)
+    parsed = review.parse(answer["content"], revised)
+    assert parsed["findings"] == []
+    assert parsed["previous"] == [{"id": 1, "status": "fixed", "note": "演示候选包含修订标记"}]
+
+
 def test_feedback_keeps_position_severity_and_suggestion():
     findings = [{"file": "money.py", "line": 2, "severity": "blocking", "finding": "没有保留两位小数",
                  "trigger": "total(1, 0.005)", "evidence": "返回 0.005", "suggestion": "用 round(..., 2)"}]

@@ -8,7 +8,6 @@ with unrelated uncommitted edits that must survive the delivery untouched.
 import json
 import os
 import re
-import shutil
 import subprocess
 import sys
 import time
@@ -24,7 +23,7 @@ from prepare_baselines import build_repository  # noqa: E402
 client = httpx.Client(base_url="http://localhost:3101", timeout=30)
 catalog = json.loads((root / "runtime/baseline-catalog.json").read_text(encoding="utf-8"))
 task = next(t for t in catalog if t["id"] == "checkout")
-target = root / "runtime/delivery-target"
+target = root / "runtime" / f"delivery-target-{uuid.uuid4().hex[:8]}"
 checks = []
 
 
@@ -42,8 +41,7 @@ def delivery_rows(run_id):
     return client.get(f"/runs/{run_id}/deliveries").raise_for_status().json()
 
 
-shutil.rmtree(target, ignore_errors=True)
-target.mkdir(parents=True)
+target.mkdir(parents=True, exist_ok=False)
 commit = build_repository(target)
 assert commit == task["spec"]["commit"], "the target must be at the task's fixed base version"
 (target / "NOTES.txt").write_text("my unrelated uncommitted note\n", encoding="utf-8")

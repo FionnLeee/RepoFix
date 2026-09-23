@@ -50,7 +50,7 @@ def recover_report(source, artifacts, output):
     return report
 
 
-def evaluate(mode, contexts, repeats, output):
+def evaluate(mode, contexts, repeats, output, review_policy="auto"):
     base = "http://localhost:3101"
     with httpx.Client(base_url=base, timeout=20) as client:
         response = client.get("/baseline-tasks")
@@ -59,16 +59,19 @@ def evaluate(mode, contexts, repeats, output):
         if not catalog:
             raise ValueError("No baseline tasks registered")
         output.mkdir(parents=True, exist_ok=True)
-        report = {"mode": mode, "repeats": repeats, "task_ids": [t["id"] for t in catalog], "runs": []}
+        report = {"mode": mode, "repeats": repeats, "task_ids": [t["id"] for t in catalog],
+                  "contexts": contexts, "review_policy": review_policy, "memory_enabled": False, "runs": []}
         target = output / f"baseline-{mode}-{int(time.time())}-{uuid.uuid4().hex[:8]}.json"
         for repeat in range(repeats):
             for task in catalog:
-                # Alternate paired order across repetitions to reduce a fixed order effect.
-                for context in (contexts if repeat % 2 == 0 else list(reversed(contexts))):
+                # Rotate order so each context occupies each position across repetitions.
+                for context in contexts[repeat % len(contexts):] + contexts[:repeat % len(contexts)]:
                     row = {"task_id": task["id"], "context": context, "repeat": repeat, "status": "CLIENT_ERROR"}
+                    started = time.monotonic()
                     try:
                         response = client.post("/runs", json={"mode": mode, "baselineId": task["id"],
-                            "contextMode": context, "requestKey": str(uuid.uuid4())})
+                            "contextMode": context, "reviewPolicy": review_policy,
+                            "memoryEnabled": False, "requestKey": str(uuid.uuid4())})
                         response.raise_for_status()
                         run_id = response.json()["id"]
                         row["run_id"] = run_id
@@ -86,6 +89,7 @@ def evaluate(mode, contexts, repeats, output):
                             client.post(f"/runs/{run_id}/cancel", json={}).raise_for_status()
                     except httpx.HTTPError as error:
                         row["error"] = type(error).__name__
+                    row["seconds"] = round(time.monotonic() - started, 2)
                     report["runs"].append(row)
                     result = row.get("result") or {}
                     if row["status"] == "SUCCEEDED":
@@ -107,7 +111,9 @@ def evaluate(mode, contexts, repeats, output):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--live", action="store_true")
-    parser.add_argument("--contexts", nargs="+", choices=["full", "compact"], default=["full", "compact"])
+    parser.add_argument("--contexts", nargs="+", choices=["full", "compact", "managed"],
+                        default=["full", "compact"])
+    parser.add_argument("--review-policy", choices=["off", "auto"], default="auto")
     parser.add_argument("--repeats", type=int, choices=range(1, 11), default=1)
     parser.add_argument("--output", type=Path, default=Path("runtime/validation"))
     parser.add_argument("--recover-report", type=Path, help="Recover usage from local trajectories; makes no API calls")
@@ -116,5 +122,6 @@ if __name__ == "__main__":
     if args.recover_report:
         recover_report(args.recover_report, args.artifacts_root, args.output)
         raise SystemExit(0)
-    report = evaluate("live" if args.live else "demo", args.contexts, args.repeats, args.output)
+    report = evaluate("live" if args.live else "demo", args.contexts, args.repeats, args.output,
+                      args.review_policy)
     raise SystemExit(0 if all(r["status"] == "SUCCEEDED" for r in report["runs"]) else 1)

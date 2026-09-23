@@ -8,10 +8,10 @@ COPY apps/web/package.json apps/web/package.json
 RUN pnpm install --frozen-lockfile
 COPY apps apps
 FROM base AS api
-RUN pnpm --filter @repopilot/api build
-CMD ["sh", "-c", "pnpm --filter @repopilot/api migrate && pnpm --filter @repopilot/api start"]
+RUN pnpm --filter @repofix/api build
+CMD ["sh", "-c", "pnpm --filter @repofix/api migrate && pnpm --filter @repofix/api start"]
 FROM base AS web
 ENV NEXT_TELEMETRY_DISABLED=1
 ENV API_URL=http://api:3101
-RUN pnpm --filter @repopilot/web build
-CMD ["pnpm", "--filter", "@repopilot/web", "start"]
+RUN pnpm --filter @repofix/web build
+CMD ["pnpm", "--filter", "@repofix/web", "start"]

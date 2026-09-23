@@ -1,9 +1,9 @@
 {
-  "name": "repopilot",
+  "name": "repofix",
   "private": true,
   "packageManager": "pnpm@10.17.1",
   "scripts": {
-    "build": "pnpm --filter @repopilot/api build && pnpm --filter @repopilot/web build",
-    "typecheck": "pnpm --filter @repopilot/api typecheck && pnpm --filter @repopilot/web typecheck"
+    "build": "pnpm --filter @repofix/api build && pnpm --filter @repofix/web build",
+    "typecheck": "pnpm --filter @repofix/api typecheck && pnpm --filter @repofix/web typecheck"
   }
 }

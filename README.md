@@ -1,10 +1,12 @@
-# RepoPilot
+# RepoFix
 
 面向代码任务的 Agent 工作台，基于固定版本的 [mini-swe-agent](https://github.com/SWE-agent/mini-swe-agent) 扩展。
 
 技术栈：Next.js / TypeScript 工作台、NestJS / Fastify 控制端、Prisma / PostgreSQL、RabbitMQ 和 Python Worker。支持固定 commit 的小型 Python 仓库、多文件补丁与独立验收。
 
-复用 mini-swe-agent 2.4.6（MIT）的 Agent 循环、模型接入与轨迹格式，以 submodule 固定提交 `04d809ceab9df28f9adaed044884180159172930`，保留上游许可证。RepoPilot 在外部新增任务管理、跨语言 Worker 协议、Docker 沙箱适配、独立验收和网页工作台。
+复用 mini-swe-agent 2.4.6（MIT）的 Agent 循环、模型接入与轨迹格式，以 submodule 固定提交 `04d809ceab9df28f9adaed044884180159172930`，保留上游许可证。RepoFix 在外部新增任务管理、跨语言 Worker 协议、Docker 沙箱适配、独立验收和网页工作台。
+
+**命名说明：** 项目展示名与仓库名由 RepoPilot 改为 RepoFix。已有 Python `repopilot` 模块、Compose 项目名、RabbitMQ 队列、数据库用户及持久化标签继续沿用原内部标识，避免使既有运行记录、检查点和本机数据失效。历史评测保留运行时的原名称与镜像哈希，不追改证据。
 
 ## 2026-09-19 审查修正
 
@@ -21,7 +23,7 @@
 
 ## 代码归档与回档
 
-私有仓库：[FionnLeee/RepoPilot](https://github.com/FionnLeee/RepoPilot)，默认分支 `main`。克隆时使用 `git clone --recurse-submodules https://github.com/FionnLeee/RepoPilot.git` 获取固定版本的上游依赖。
+私有仓库：[FionnLeee/RepoFix](https://github.com/FionnLeee/RepoFix)，默认分支 `main`。克隆时使用 `git clone --recurse-submodules https://github.com/FionnLeee/RepoFix.git` 获取固定版本的上游依赖。
 
 每轮改进通过适用验证后，提交相关文件并执行 `git push origin main`。通过 `git log --oneline` 查找历史版本；需要撤销某次修改时，执行 `git revert <commit>`，验证后推送，保留完整历史。
 
@@ -233,6 +235,14 @@ image 任务先将一次性容器中的仓库还原到指定 `base_commit`，再
 
 两批 20 条运行共记录 **689 次逻辑模型调用、686 次带用量的回复、5,579,209 个已报告输入/输出 token**（首批 2,974,437，修复批 2,604,772）。首批三个被拒请求没有返回 token 用量，因此该数是可观测下界，平台实际扣减可能不同。用户设置的总额约 20M token；本次在 18M 已报告 token 处设置自动停 Worker 阈值，实际未触及。评测完成后 Worker 已停止；不会自动扩样或续跑。
 
+### 2026-09-23 面试向补充评测
+
+在用户指定的北京时间 12:00—14:00 窗口内，完成另三例 SWE-bench Lite 便利样本的冻结配对与官方 harness：`pallets__flask-4045`、`pallets__flask-4992`、`psf__requests-1963`。选择清单先于模型调用写入 `runtime/validation/interview-20260923-holdout-selection.json`，冻结目录为 `runtime/validation/frozen-20260923-interview-holdout-three-paired/`。仍使用完整上下文、记忆关闭、无 gold 文件/测试提示、Reviewer 开关各一组，共享最多 60 次 Coder+Reviewer 调用与 900 秒墙钟。六次 Agent 运行均交付非空补丁，但官方结果为 **关闭 1/3、开启 0/3 resolved**，只有 Requests 关闭组通过。关闭组 58 次模型调用、240,398 已报告 token；开启组 83 次、381,936 token。开启组四条 Reviewer 意见处置均为 `unverified`，一个阻断项未闭环；本小样本不能证明 Reviewer 提升，实际 token 也不相等。没有继续扩样。
+
+同一官方模型上另做四个固定 Reviewer 校准样本：两个已知缺陷都被指出为阻断，两个正确补丁都没有阻断意见；这是微型功能检查，不能估计总体查准/查全。三项自建跨文件任务以 Reviewer 关闭、记忆关闭方式分别运行 `full`、`compact`、`managed` 各三次，并轮换顺序；`scripts/evaluate_baselines.py --live --contexts full compact managed --repeats 3 --review-policy off` 报告在 `runtime/validation/interview-20260923-context/`。三组**各 6/9 独立验收通过**，27 次用量记录全部完整；9 次失败都漏了任务明写的折扣范围校验。已报告输入加输出 token 分别为 **25,827 / 30,397 / 54,724**，平均端到端时长 **11.17 / 11.96 / 12.67 秒**。这三个小任务上 `managed` 没有带来成功数或 token 优势；自建任务显式提供允许路径，不能作为 SWE-bench 成绩。
+
+确定性系统验证另覆盖 7/7 类故障矩阵、交付 6/6、双 Worker 并行 2/2、上下文 smoke 6/6 与 Worker 镜像内上下文检查 7/7；Linux Worker 全套 pytest **114 passed**，API/Web 镜像构建通过。它们是系统行为证据，不计入真实模型解决率。本轮新增 33 次 Agent 运行与四次直接 Reviewer 校准合计 **736,027 个已报告 token**；连同上述两批，累计 **6,315,236 个已报告 token**，低于用户约 20M 总额和 18M 自动停 Worker 阈值。首批三次被拒请求用量未知，累计为可观测下界。运行结束后 Worker 已停止。
+
 `full` 保留完整会话历史。`compact` 在历史超过 3,500 字符且有足够旧消息时，用不超过约 1,200 字符的历史摘录替换较早消息，保留系统规则、原始任务及最近四条消息。完整原始轨迹独立保存，token 汇总使用完整记录，页面显示压缩事件。
 
 这是有损的抽取式压缩 v1，不是语义摘要或长期记忆；字符阈值不是精确 token 预算。小任务可能不触发，或压缩后反而需要更多调用，必须结合实测成功率和 token 判断。自建任务数量小，单次配对不能证明统计显著提升。
@@ -241,7 +251,7 @@ image 任务先将一次性容器中的仓库还原到指定 `base_commit`，再
 
 成功与失败运行均汇总轨迹中的用量，包括格式错误回复。`usage_status` 区分完整、部分与不可用；部分记录只是已知 token 的小计，不代表整次运行消耗。基线报告同时列出完整覆盖的运行数。格式重试提示包含正确的命令块示例，连续三次格式错误仍会停止。
 
-当前只面向单用户本机运行。用户登录、S3 工件存储与大规模 SWE-bench 评测尚未完成；独立 Reviewer 与 OTel trace 已实现，小样本配对未观察到 resolved 率提升，trace 也只在配置了 OTLP 端点时开启。任务失联会按已登记检查点自动重排队（最多 3 次），超过上限或没有可用检查点时停在中断；审批策略是确定性写命令解析，不是完备的能力模型，沙箱、允许路径校验与独立验收仍是实际边界。Redis 用于共享模型并发配额，仅在 Compose 内部可达。没有用户体系，审批接口与任务接口一样只对本机开放。固定测试验收不保证任意对抗代码无法干扰测试进程。SWE-bench 已在一个历史十实例样本上通过官方 harness 得到 3/10 resolved（另有 2 个实例因本机环境单列），以及本节无 gold 提示五实例配对复测；尚未进行可代表总体的固定子集或全量评测。`scripts/swebench.py preflight` 会如实报出其他实例所需的包、缓存镜像与磁盘余量。live 运行使用配置里的模型凭据；**返回 200 不等于免费**；路由按 `MODEL_POLICY` 明确选择。本次复测结束后 Worker 已停止。
+当前只面向单用户本机运行。用户登录、S3 工件存储与大规模 SWE-bench 评测尚未完成；独立 Reviewer 与 OTel trace 已实现，小样本配对未观察到 resolved 率提升，trace 也只在配置了 OTLP 端点时开启。任务失联会按已登记检查点自动重排队（最多 3 次），超过上限或没有可用检查点时停在中断；审批策略是确定性写命令解析，不是完备的能力模型，沙箱、允许路径校验与独立验收仍是实际边界。Redis 用于共享模型并发配额，仅在 Compose 内部可达。没有用户体系，审批接口与任务接口一样只对本机开放。固定测试验收不保证任意对抗代码无法干扰测试进程。SWE-bench 已在一个历史十实例样本上通过官方 harness 得到 3/10 resolved（另有 2 个实例因本机环境单列），以及本节无 gold 提示的五实例配对复测和新增三实例配对；它们都不能代表总体成绩。`scripts/swebench.py preflight` 会如实报出其他实例所需的包、缓存镜像与磁盘余量。live 运行使用配置里的模型凭据；**返回 200 不等于免费**；路由按 `MODEL_POLICY` 明确选择。本次评测结束后 Worker 已停止。
 
 ## 停止
 

@@ -323,7 +323,7 @@ function Workspace() {
             <Code2 size={21} />
           </span>
           <span>
-            RepoPilot<small>代码任务工作台</small>
+            RepoFix<small>代码任务工作台</small>
           </span>
         </a>
         <div className="rail-label">工作空间</div>
@@ -882,7 +882,7 @@ function Workspace() {
             </div>
           )}
           <footer>
-            <span>RepoPilot · 首轮可运行基线</span>
+            <span>RepoFix · 首轮可运行基线</span>
             <span>执行记录与补丁均来自实际运行</span>
           </footer>
         </section>

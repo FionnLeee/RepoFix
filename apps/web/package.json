@@ -1,5 +1,5 @@
 {
-  "name": "@repopilot/web",
+  "name": "@repofix/web",
   "private": true,
   "scripts": {
     "dev": "next dev -p 3100",
