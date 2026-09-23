@@ -36,6 +36,7 @@ HARNESS_IMAGE = os.getenv("SWEBENCH_IMAGE", "repopilot-swebench")
 SAMPLE = {
     "instance_id": "sample__sample-1", "repo": "psf/requests", "base_commit": "0" * 40,
     "problem_statement": "示例：用本地缓存的实例文件替换它。",
+    "image": "swebench/sweb.eval.x86_64.psf_1776_requests-3362:latest",
     "patch": "diff --git a/requests/models.py b/requests/models.py\n--- a/requests/models.py\n+++ b/requests/models.py\n",
     "test_patch": "diff --git a/tests/test_requests.py b/tests/test_requests.py\n",
     "FAIL_TO_PASS": '["tests/test_requests.py::TestRequests::test_x"]', "PASS_TO_PASS": "[]",
