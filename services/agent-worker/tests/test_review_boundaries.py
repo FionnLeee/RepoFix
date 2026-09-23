@@ -108,6 +108,52 @@ def test_official_flash_route_is_explicit_and_disables_thinking(monkeypatch):
                for call in calls)
 
 
+def test_revision_never_sends_internal_exit_role_to_model(tmp_path, monkeypatch):
+    import json
+
+    from minisweagent.exceptions import Submitted
+
+    answers = iter([
+        {"findings": [{"file": "a.py", "line": 1, "severity": "blocking", "finding": "check this"}]},
+        {"findings": [], "previous": [{"id": 1, "status": "rejected_ok", "note": "the cited test covers it"}]},
+    ])
+    monkeypatch.setattr(review, "reviewer_for", lambda *args: SimpleNamespace(
+        complete=lambda _: {"content": json.dumps(next(answers)), "cost": 0}))
+
+    class Environment:
+        def execute(self, action, cwd=""):
+            if action["command"] == "submit":
+                raise Submitted({"role": "exit", "content": "done",
+                                 "extra": {"exit_status": "Submitted", "submission": ""}})
+            return {"output": "ok", "returncode": 0, "exception_info": ""}
+
+        def serialize(self):
+            return {}
+
+        def get_template_vars(self):
+            return {}
+
+    class RoleCheckingModel(DeterministicModel):
+        def query(self, messages, **kwargs):
+            assert all(item.get("role") != "exit" for item in messages)
+            return super().query(messages, **kwargs)
+
+    model = RoleCheckingModel(outputs=[
+        make_output("first submission", [{"command": "submit"}], cost=0),
+        make_output("REVIEW-RESPONSE 1: rejected - test_a proves it", [{"command": "submit"}], cost=0),
+    ], cost_per_call=0)
+    agent = TracedAgent(model, Environment(), emit=lambda *_: None, cancelled=threading.Event(),
+                        system_template="", instance_template="{{task}}", step_limit=4, cost_limit=0,
+                        output_path=tmp_path / "trajectory.json")
+    assert agent.run("fix")["exit_status"] == "Submitted"
+    result = review_before_acceptance(agent, {"mode": "live", "task": "fix", "reviewRounds": 1},
+        SimpleNamespace(allowedPaths=["a.py"], testCommand="true"),
+        SimpleNamespace(execute=lambda _: {"output": "ok"}),
+        lambda: ({"a.py": "x=1\n"}, ["a.py"], "patch"), None, lambda *_: None, "fix")
+    assert result[2][0]["outcome"] == "rejected_with_evidence"
+    assert sum(item.get("role") == "exit" for item in agent.full_messages) == 2
+
+
 @pytest.mark.parametrize("answer", ["invalid", '{"summary":"missing findings"}', '{"findings":null}'])
 def test_invalid_review_is_failed_at_the_orchestrator_not_clean(tmp_path, monkeypatch, answer):
     monkeypatch.setattr(review, "reviewer_for", lambda *args: SimpleNamespace(

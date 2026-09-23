@@ -336,6 +336,9 @@ class TracedAgent(DefaultAgent):
 
     def revise(self, task, message):
         """Continue the same attempt with one extra observation, without resetting history."""
+        # Submission is an internal control-flow message, not an API chat role. Keep it in
+        # full_messages for the audit trail but remove it from the next model request.
+        self.messages = [item for item in self.messages if item.get("role") != "exit"]
         self.add_messages(self.model.format_message(role="user", content=message))
         # Publish the verdict and revision prompt together before a new model request.
         self.save(self.config.output_path)
