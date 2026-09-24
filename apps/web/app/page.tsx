@@ -330,6 +330,9 @@ function Workspace() {
         <div className="nav-current">
           <Workflow size={17} /> 任务执行 <ChevronRight size={15} />
         </div>
+        <a className="nav-showcase" href="/showcase">
+          <Play size={16} /> 面试演示 <ArrowUpRight size={15} />
+        </a>
         <div className="rail-label recent-label">
           最近任务 <span>{runs.data?.length || 0}</span>
         </div>
@@ -380,6 +383,10 @@ function Workspace() {
             </div>
             <span className="phase">固定版本 · 多文件验收</span>
           </div>
+          <a className="showcase-banner" href="/showcase">
+            <span><strong>第一次介绍 RepoFix？</strong> 沿四步演示任务、沙箱、补丁与验收，直接打开实际运行证据。</span>
+            <span>打开演示页 <ArrowUpRight size={16} /></span>
+          </a>
           <div className="task-brief">
             <div className="task-icon">
               <FileDiff size={23} />

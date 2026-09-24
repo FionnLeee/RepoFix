@@ -335,6 +335,39 @@ class Api {
   @Get("baseline-tasks") baselines() {
     return catalog().map(({ id, title, task, spec }) => ({ id, title, task, spec }));
   }
+  @Get("showcase") async showcase() {
+    const where = { mode: "demo", baselineId: { not: null } };
+    const select = { id: true, baselineId: true, status: true, createdAt: true,
+      updatedAt: true, result: true } as const;
+    const [featured, recent] = await Promise.all([
+      this.db.run.findMany({ where: { ...where, status: "SUCCEEDED" },
+        orderBy: { createdAt: "desc" }, take: 6, select }),
+      this.db.run.findMany({ where, orderBy: { createdAt: "desc" }, take: 8, select }),
+    ]);
+    const summarize = (runs: typeof featured) => runs.map((run) => {
+      const result = run.result as {
+        patch?: string;
+        changed_files?: string[];
+        verification?: { passed?: boolean | null };
+      } | null;
+      return {
+        id: run.id, baselineId: run.baselineId, status: run.status,
+        createdAt: run.createdAt, updatedAt: run.updatedAt,
+        patchReady: Boolean(result?.patch),
+        changedFiles: result?.changed_files?.length ?? 0,
+        acceptance: result?.verification?.passed === true ? "passed"
+          : result?.verification?.passed === false ? "failed" : "pending",
+      };
+    });
+    return {
+      kind: "deterministic-demo",
+      baselines: catalog().map(({ id, title, task, spec }) => ({
+        id, title, task, commit: spec.commit,
+      })),
+      featuredRuns: summarize(featured),
+      recentRuns: summarize(recent),
+    };
+  }
   @Get("projects") projects() {
     return this.db.project.findMany({ where: { owner: "local" }, orderBy: { createdAt: "desc" } });
   }
