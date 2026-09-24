@@ -36,13 +36,13 @@
 
 历史记录中关于 Redis fail-open、自动选择历史非空补丁和 gold 派生提示的描述已被以上行为替代。
 
-## 代码归档与回档
+## 代码归档与版本发布
 
 私有仓库：[FionnLeee/RepoFix](https://github.com/FionnLeee/RepoFix)，默认分支 `main`。克隆时使用 `git clone --recurse-submodules https://github.com/FionnLeee/RepoFix.git` 获取固定版本的上游依赖。
 
-每轮改进通过适用验证后，提交相关文件并执行 `git push origin main`。通过 `git log --oneline` 查找历史版本；需要撤销某次修改时，执行 `git revert <commit>`，验证后推送，保留完整历史。
+每轮改进通过适用验证后，在主题分支提交并向 `main` 发起 PR；合并后的 `main` 是公开代码基线。通过 `git log --oneline` 查找历史版本；需要撤销某次修改时，通过新的撤销提交和 PR 保留完整历史。当前版本用于本机演示与研究复现，尚未承诺生产 SLA。
 
-Git 归档包含源码、配置模板和本 README。学习笔记、设计方案、复盘和验证记录仅保存在本地，不提交到 GitHub。本机 `.env`、数据库数据及 `runtime/` 工件不在归档中，恢复部署时需另行配置。
+Git 归档包含源码、配置模板和本 README。学习笔记、面试材料、设计方案、复盘和验证记录仅保存在本地，不提交到 GitHub。本机 `.env`、数据库数据及 `runtime/` 工件不在归档中，恢复部署时需另行配置。公开 README 只列冻结结果与判据；原始逐题运行证据需要在本机保留的工件中核对。
 
 ## 本地启动
 
