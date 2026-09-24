@@ -262,7 +262,13 @@ image 任务先将一次性容器中的仓库还原到指定 `base_commit`，再
 
 在重试前固定前 30 题中全部 10 道首轮未通过题，以 100 次上限逐题串行复核，**1/10** 转为通过；最多两次尝试的最好结果为 **34/50**，不是 pass@1。唯一恢复题本次仅调用 12 次，另有 5 道再次耗尽 100 次，因此现有数据不能证明提高上限提升成功率。空补丁、未通过补丁和每次用量均保留。Mini 的最终 `resolved` 由 SWE-bench 官方 harness 在独立环境评分；RepoFix 负责任务编排、固定 commit 工作区、Agent 工具循环、补丁生成与导出。项目自有的基线/候选隔离验收器用于配置了测试的任务，不能把官方 harness 算作自研能力。
 
-本轮新增 30 次 Agent 运行用量为 **25,553,715** 已报告 token；连同旧评测累计 **45,025,293**。早期三个被服务端拒绝的请求没有返回用量，累计值是可观测下界。逐次预测、官方验收 manifest 与运行工件仅存本机 `runtime/validation/` 和 `runtime/artifacts/`，不上传 Git。`IMAGE_STEP_LIMIT` 控制 image 工作区的调用上限，默认 60，本轮 Worker 显式设为 100。评测结束已停止所有容器与 Docker Desktop，本机 `.env` 的 `LIVE_ENABLED=false`；未来真实模型调用需重新显式启用。
+本轮新增 30 次 Agent 运行用量为 **25,553,715** 已报告 token；连同旧评测累计 **45,025,293**。早期三个被服务端拒绝的请求没有返回用量，累计值是可观测下界。逐次预测、官方验收 manifest 与运行工件仅存本机 `runtime/validation/` 和 `runtime/artifacts/`，不上传 Git。`IMAGE_STEP_LIMIT` 控制 image 工作区的调用上限，默认 60，本轮 Worker 显式设为 100。该批评测结束时曾停止所有容器与 Docker Desktop，随后按用户新要求恢复 RepoFix 服务；本机 `.env` 的 `LIVE_ENABLED=false`，未来真实模型调用需重新显式启用。
+
+### 2026-09-24 其他历史 60 次耗尽样本复测
+
+用户把本任务累计 token 上限提高到 60M 后，排除当天上午已经复测的 Mini 关闭组 10 题，从 9 月 23 日晚至 24 日凌晨的冻结运行中按原 run ID 固定其余 **5 条达到 60/60 次、以 `LimitsExceeded` 结束**的样本：SWE-bench Lite 的 pytest 关闭组与 xarray Reviewer 开启组，Mini 的 Django 一条及 Sphinx 两条 Reviewer 开启组。原题、Reviewer 设置和官方 `deepseek-flash` 保持不变；新运行最多 100 次共享调用，逐条用官方 harness 验收。**5/5 有效复测完成，0/5 resolved**。其中两条产出补丁但未解决，三条在 100 次后仍无最终补丁；不能声称提高上限提升修复率。历史和当前 Worker 构建不同，亦不能将差异只归因于预算。
+
+pytest 首次补跑在 51 次有用量回复后遇到连接错误，另以新 request key 补跑；基础设施中断不计入五条有效结果，已知 **511,927 token** 留在累计用量内。五条有效复测新增 **8,940,566 token**；所有评测累计已报告下界 **54,477,786 / 60,000,000**，为未返回用量的最后一个请求额外预留 1,200,000 后的保守上界 **55,677,786**。这批复测不改变 Mini 首轮 33/50，也不改变原十题 Reviewer 配对。逐次 run ID、预测、官方结果与轨迹留在本机 `runtime/validation/historical-60-limit-to-100-*` 和 `runtime/artifacts/`，不上传 Git。按用户最新要求，Docker Desktop 及 RepoFix 服务保持运行，API 的 `LIVE_ENABLED=false`；重启或查看现有服务不会自动提交付费模型任务。
 
 `full` 保留完整会话历史。`compact` 在历史超过 3,500 字符且有足够旧消息时，用不超过约 1,200 字符的历史摘录替换较早消息，保留系统规则、原始任务及最近四条消息。完整原始轨迹独立保存，token 汇总使用完整记录，页面显示压缩事件。
 
@@ -272,7 +278,7 @@ image 任务先将一次性容器中的仓库还原到指定 `base_commit`，再
 
 成功与失败运行均汇总轨迹中的用量，包括格式错误回复。`usage_status` 区分完整、部分与不可用；部分记录只是已知 token 的小计，不代表整次运行消耗。基线报告同时列出完整覆盖的运行数。格式重试提示包含正确的命令块示例，连续三次格式错误仍会停止。
 
-当前只面向单用户本机运行。用户登录、S3 工件存储与 SWE-bench Verified 500 题评测尚未完成；第三方 Verified Mini 50 题已完成首轮；独立 Reviewer 与 OTel trace 已实现，小样本配对结果不一致，尚不能证实 Reviewer 有普遍效果，trace 也只在配置了 OTLP 端点时开启。任务失联会按已登记检查点自动重排队（最多 3 次），超过上限或没有可用检查点时停在中断；审批策略是确定性写命令解析，不是完备的能力模型，沙箱、允许路径校验与独立验收仍是实际边界。Redis 用于共享模型并发配额，仅在 Compose 内部可达。没有用户体系，审批接口与任务接口一样只对本机开放。固定测试验收不保证任意对抗代码无法干扰测试进程。SWE-bench 历史十实例样本经官方 harness 得到 3/10 resolved（另有 2 个实例因本机环境单列）；另有无 gold 提示的 Lite 五实例与三实例配对、Verified Mini 十实例配对；Mini 全 50 题的混合上限结果见上节，均不能代表 Verified 500 题总体成绩。`scripts/swebench.py preflight` 会如实报告镜像、磁盘与依赖缺口。live 运行使用配置里的模型凭据；**返回 200 不等于免费**；路由按 `MODEL_POLICY` 明确选择。本次评测结束后 Worker 已停止，API 的 `LIVE_ENABLED=false`。
+当前只面向单用户本机运行。用户登录、S3 工件存储与 SWE-bench Verified 500 题评测尚未完成；第三方 Verified Mini 50 题已完成首轮；独立 Reviewer 与 OTel trace 已实现，小样本配对结果不一致，尚不能证实 Reviewer 有普遍效果，trace 也只在配置了 OTLP 端点时开启。任务失联会按已登记检查点自动重排队（最多 3 次），超过上限或没有可用检查点时停在中断；审批策略是确定性写命令解析，不是完备的能力模型，沙箱、允许路径校验与独立验收仍是实际边界。Redis 用于共享模型并发配额，仅在 Compose 内部可达。没有用户体系，审批接口与任务接口一样只对本机开放。固定测试验收不保证任意对抗代码无法干扰测试进程。SWE-bench 历史十实例样本经官方 harness 得到 3/10 resolved（另有 2 个实例因本机环境单列）；另有无 gold 提示的 Lite 五实例与三实例配对、Verified Mini 十实例配对；Mini 全 50 题的混合上限结果见上节，均不能代表 Verified 500 题总体成绩。`scripts/swebench.py preflight` 会如实报告镜像、磁盘与依赖缺口。live 运行使用配置里的模型凭据；**返回 200 不等于免费**；路由按 `MODEL_POLICY` 明确选择。本次评测结束后 Worker 与其他 RepoFix 服务保持运行，API 的 `LIVE_ENABLED=false`。
 
 ## 停止
 
