@@ -192,6 +192,27 @@ export default function ShowcasePage() {
             </a>)}
           </div> : <div className={styles.noRuns}>{loading ? "正在读取运行记录…" : "尚无确定性演示记录。可在上方启动第一条任务。"}</div>}
         </section>
+        <section className={styles.evidence} aria-labelledby="historical-title">
+          <div className={styles.sectionHeading}>
+            <span className={styles.overline}>ARCHIVED MODEL RUNS · READ ONLY</span>
+            <h2 id="historical-title">一条成功、一条失败的真实模型记录</h2>
+            <p>以下 ID 来自冻结 Mini 评测；点击进入完整工作台读取本机历史运行。这里不会重新提交任务，也不属于上面的确定性演示统计。</p>
+          </div>
+          <div className={styles.runGrid}>
+            <a className={styles.runCard} href="/?run=29ac5098-0e7d-460e-b1ac-a04649b8d1f8&tab=tests">
+              <div className={styles.runTop}><span className={styles.runId}>真实模型 / 成功</span><span className={`${styles.runStatus} ${styles.passed}`}>官方 resolved</span></div>
+              <h3>sphinx-doc__sphinx-8475</h3>
+              <p>10 次调用，生成正式补丁；Agent 运行 49.63 秒，不含官方 harness。run 29ac5098…</p>
+              <div className={styles.runBottom}>查看归档运行 <ArrowRight size={17} /></div>
+            </a>
+            <a className={styles.runCard} href="/?run=091df0ef-b64c-480d-85cb-2082a9de0ac5&tab=tests">
+              <div className={styles.runTop}><span className={styles.runId}>真实模型 / 失败</span><span className={styles.runStatus}>官方未通过</span></div>
+              <h3>django__django-11885</h3>
+              <p>100 次调用耗尽；第 18 次调用后的检查点首次观测到改动，但未提交正式候选。run 091df0ef…</p>
+              <div className={styles.runBottom}>查看归档运行 <ArrowRight size={17} /></div>
+            </a>
+          </div>
+        </section>
         <footer className={styles.footer}><span>RepoFix / 本地面试演示</span><span>模型评测结果以独立报告为准 · <a href="/">进入完整工作台 <ArrowRight size={13} /></a></span></footer>
       </div>
     </main>

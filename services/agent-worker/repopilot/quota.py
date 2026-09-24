@@ -2,8 +2,8 @@
 
 Redis holds only short-lived coordination state here, never run truth: a slot is a
 sorted-set member that expires, so a worker crash cannot permanently leak quota. When
-Redis is not configured or unreachable the worker records an event and continues without
-a shared quota instead of silently pretending one exists.
+Redis is not configured or unreachable, new model requests fail closed; a worker must
+not silently run without the shared limit.
 """
 
 import os
@@ -23,7 +23,7 @@ return 0
 
 
 class QuotaUnavailable(RuntimeError):
-    """Redis was not reachable; the caller decides whether to fail open and record it."""
+    """Redis was not reachable; the caller rejects new model requests."""
 
 
 class QuotaTimeout(RuntimeError):

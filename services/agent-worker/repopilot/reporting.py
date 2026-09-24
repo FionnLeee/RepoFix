@@ -63,6 +63,16 @@ def failure_result(run, error):
     try:
         folder.mkdir(parents=True, exist_ok=True)
         (folder / "result.json").write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
+        # A separate, read-only process snapshot summary never becomes result.patch.
+        from repopilot.diagnostics import diagnose
+
+        diagnosis, delta = diagnose(run["id"], folder.parent)
+        (folder / "diagnostic.json").write_text(json.dumps(diagnosis, ensure_ascii=False, indent=2), encoding="utf-8")
+        if delta:
+            (folder / "diagnostic.patch").write_bytes(delta)
     except OSError:
         result["artifact_write_failed"] = True
+    except (ValueError, KeyError, TypeError, ImportError):
+        # Failure accounting and the original result are more important than a diagnostic view.
+        pass
     return result

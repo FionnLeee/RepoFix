@@ -52,6 +52,7 @@ import { readFileSync, existsSync } from "node:fs";
 import { timingSafeEqual } from "node:crypto";
 import { ContextService, ContextOwner, IndexBegin, IndexPublish, MemoryWrite, projectKey } from "./context";
 import { DeliveryClaim, DeliveryDecision, DeliveryReceipt, DeliveryService, PrepareDelivery } from "./delivery";
+import { sourceFacts, terminalElapsedSeconds } from "./showcase-facts";
 
 const TASK =
   "修复 pricing.py 中 discounted_total：百分比折扣应按百分比计算，结果保留两位小数，并拒绝小于 0 或大于 100 的折扣。运行开发测试后提交补丁。";
@@ -371,9 +372,10 @@ class Api {
   @Get("showcase/runs/:id") async showcaseRun(@Param("id") id: string) {
     const run = await this.db.run.findUnique({ where: { id },
       include: { events: { orderBy: { id: "asc" }, select: { type: true, createdAt: true } } } });
-    const baseline = catalog().find((item) => item.id === run?.baselineId);
-    if (!run || run.mode !== "demo" || !baseline) throw new NotFoundException();
+    if (!run || run.mode !== "demo" || !run.baselineId) throw new NotFoundException();
+    const baseline = catalog().find((item) => item.id === run.baselineId);
     const result = run.result as {
+      provenance?: { commit?: string };
       patch?: string;
       changed_files?: string[];
       verification?: {
@@ -391,12 +393,15 @@ class Api {
     const milestones = ["QUEUED", "RUNNING", "REPOSITORY_READY", "REVIEW_REQUESTED",
       "REVIEW_COMPLETED", "CANDIDATE", "SUCCEEDED", "FAILED", "CANCELLED", "INTERRUPTED"];
     const seen = new Set<string>();
+    const source = sourceFacts(run.spec, result?.provenance);
     return {
       kind: "deterministic-demo-run",
-      id: run.id, baselineId: baseline.id, title: baseline.title, task: run.task,
+      id: run.id, baselineId: run.baselineId, title: baseline?.title || run.baselineId, task: run.task,
       status: run.status, createdAt: run.createdAt, updatedAt: run.updatedAt,
-      commit: baseline.spec.commit,
-      allowedPaths: baseline.spec.allowedPaths,
+      completedElapsedSeconds: terminalElapsedSeconds(run.createdAt, run.events),
+      commit: source.commit,
+      sourceStatus: source.sourceStatus,
+      allowedPaths: source.allowedPaths,
       workerId: run.workerId,
       milestones: run.events.filter((event) => {
         if (!milestones.includes(event.type) || seen.has(event.type)) return false;
@@ -550,6 +555,20 @@ class Api {
     });
     if (!run) throw new NotFoundException();
     return run;
+  }
+  @Get("runs/:id/diagnostic") async diagnostic(@Param("id") id: string) {
+    if (!/^[0-9a-f-]{36}$/.test(id) || !(await this.db.run.findUnique({ where: { id }, select: { id: true } })))
+      throw new NotFoundException();
+    const file = path.join(process.env.ARTIFACT_ROOT || "runtime/artifacts", id, "diagnostic.json");
+    try {
+      const stat = await fs.promises.stat(file);
+      if (stat.size > 16384) throw new NotFoundException();
+      const data = JSON.parse(await fs.promises.readFile(file, "utf8"));
+      if (data.run_id !== id) throw new NotFoundException();
+      return data;
+    } catch {
+      throw new NotFoundException("该运行暂无过程诊断工件");
+    }
   }
   @Post("runs/:id/evaluation") async importEvaluation(@Param("id") id: string, @Body() body: EvaluationResult) {
     // This is the same local, single-user trust boundary as task creation and approval.

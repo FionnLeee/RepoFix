@@ -108,6 +108,14 @@ def test_official_flash_route_is_explicit_and_disables_thinking(monkeypatch):
                for call in calls)
 
 
+def test_unknown_model_policy_rejects_before_provider(monkeypatch):
+    from repopilot.model_policy import require_authorized_model
+
+    monkeypatch.setenv("MODEL_POLICY", "typo-policy")
+    with pytest.raises(ValueError, match="Unknown model policy"):
+        require_authorized_model("deepseek-flash", "https://api.deepseek.com")
+
+
 def test_revision_never_sends_internal_exit_role_to_model(tmp_path, monkeypatch):
     import json
 

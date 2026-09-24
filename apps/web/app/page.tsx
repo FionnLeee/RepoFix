@@ -80,7 +80,7 @@ type Run = {
   approvalPolicy?: string;
   reviewPolicy?: string;
   recoveryAttempts?: number;
-  spec?: { source: string; commit: string; subdir: string };
+  spec?: { source: string; commit: string; subdir: string; verificationMode?: string };
   approvals?: Approval[];
   createdAt: string;
   events: Event[];
@@ -202,6 +202,7 @@ function Workspace() {
     [reviewPolicy, setReviewPolicy] = useState("auto"),
     [reviewRounds, setReviewRounds] = useState(2),
     [reviewBudget, setReviewBudget] = useState("extra"),
+    [preset, setPreset] = useState("demo"),
     [testCommand, setTestCommand] = useState("python -m unittest discover -v"),
     [verification, setVerification] = useState("import unittest\n\nclass Acceptance(unittest.TestCase):\n    def test_behavior(self):\n        # 替换为实际业务断言\n        self.fail('请填写独立验收测试')\n"),
     [busy, setBusy] = useState(false);
@@ -210,8 +211,10 @@ function Workspace() {
     queryFn: () => api<{ id: string; title: string; task: string; spec: { commit: string } }[]>("/baseline-tasks"),
   });
   useEffect(() => {
-    const initial = new URLSearchParams(window.location.search).get("run");
+    const params = new URLSearchParams(window.location.search);
+    const initial = params.get("run");
     if (initial && /^[0-9a-f-]{36}$/.test(initial)) setSelected(initial);
+    if (params.get("tab") === "tests") setTab("tests");
   }, []);
   const health = useQuery({
     queryKey: ["health"],
@@ -229,6 +232,12 @@ function Workspace() {
     queryFn: () => api<Run>(`/runs/${id}`),
     enabled: !!id,
     refetchInterval: 5000,
+  });
+  const diagnosis = useQuery({
+    queryKey: ["run-diagnostic", id],
+    queryFn: () => api<{ stop_reason?: string; model_calls?: number; first_observed_delta?: { model_calls: number; bytes: number } | null; formal_candidate_present: boolean; diagnostic_delta?: { bytes: number; status: string } | null }>(`/runs/${id}/diagnostic`),
+    enabled: !!id && ["FAILED", "INTERRUPTED", "CANCELLED"].includes(detail.data?.status || ""),
+    retry: false,
   });
   const deliveries = useQuery({
     queryKey: ["deliveries", id],
@@ -422,6 +431,18 @@ function Workspace() {
               </Button>
             </div>
           </div>
+          <div className="task-actions" aria-label="运行策略预设">
+            <Button variant={preset === "demo" ? "default" : "outline"} onClick={() => {
+              setPreset("demo"); setContextMode("managed"); setMemoryEnabled(true);
+              setReviewPolicy("auto"); setReviewBudget("extra"); setApprovalPolicy("auto");
+            }}>确定性工程演示</Button>
+            <Button variant={preset === "baseline" ? "default" : "outline"} onClick={() => {
+              setPreset("baseline"); setContextMode("full"); setMemoryEnabled(false);
+              setReviewPolicy("off"); setReviewBudget("shared"); setApprovalPolicy("auto");
+            }}>短任务基线</Button>
+            <Button variant={preset === "advanced" ? "default" : "outline"} onClick={() => setPreset("advanced")}>高级配置</Button>
+          </div>
+          <p className="scope-note">预设只填入表单参数，不会自动选择最优策略；“额外”评审预算不可作为同预算对照。</p>
           <div className="repository-form">
             <label>任务来源<select value={taskKind} onChange={e => setTaskKind(e.target.value)}>
               {baselines.data?.map(t => <option key={t.id} value={t.id}>{t.title}</option>)}
@@ -739,7 +760,7 @@ function Workspace() {
                       <dt>执行环境</dt>
                       <dd>独立容器 · 默认断网</dd>
                       <dt>验证方式</dt>
-                      <dd>{run.result?.verification?.delegated
+                      <dd>{run.spec?.verificationMode === "harness" || run.result?.verification?.delegated
                         ? (run.evaluation ? `官方 harness：${run.evaluation.status}` : "候选已生成，等待官方 harness 判定")
                         : "干净副本 + 固定测试"}</dd>
                       <dt>运行追踪</dt>
@@ -750,7 +771,7 @@ function Workspace() {
                       <dt>任务</dt><dd>{run.task}</dd>
                       <dt>动作审批</dt>
                       <dd>
-                        {run.approvalPolicy === "strict"
+                        {run.approvalPolicy === "off" ? "镜像评测模式：shell 审批停用" : run.approvalPolicy === "strict"
                           ? "严格：所有文件写入需批准"
                           : "自动：越界写入需批准"}
                       </dd>
@@ -768,8 +789,7 @@ function Workspace() {
                           : ["SUCCEEDED", "FAILED", "CANCELLED", "INTERRUPTED"].includes(run.status) ? "未获得用量记录" : "完成后汇总"}</dd></>}
                     </dl>
                     <div className="fact-note">
-                      当前版本提供可靠调度（失联自动重排队、跨代次检查点恢复、共享模型并发配额）、
-                      版本绑定审批与显式记忆。SWE-bench 接入与效果评测按最终方案继续推进。
+                      本项目区分 Agent 运行结果、独立验收和用户目标仓库交付。Mini 的官方判定由 SWE-bench harness 提供；上下文与 Reviewer 是可选能力，不代表稳定提效。
                     </div>
                   </aside>
                 </div>
@@ -795,8 +815,8 @@ function Workspace() {
                   {run.result?.patch ? (
                     <>
                       <div className="review-summary">
-                        <span className={`badge ${reviewPolicy === "off" ? "" : "on"}`}>
-                          评审{run.result.review?.policy === "off" ? "关闭" : "开启"}
+                        <span className={`badge ${(run.result.review?.policy || run.reviewPolicy) === "off" ? "" : "on"}`}>
+                          评审{(run.result.review?.policy || run.reviewPolicy) === "off" ? "关闭" : "开启"}
                         </span>
                         <span>已完成 {run.result.review?.rounds ?? 0} 轮有限修订{run.result.review?.budget === "shared" ? "（共享预算）" : ""}</span>
                         {(run.result.review?.unresolved_blocking ?? 0) > 0 && <span className="severity severity-blocking">
@@ -859,9 +879,13 @@ function Workspace() {
                     独立验收
                   </h3>
                   <p>
-                    {run.spec ? "在相同镜像的独立容器中验证原始版本失败，再验证重新应用多文件补丁后的版本通过。" : "仅将候选 pricing.py 放入新环境，使用固定测试验证。"}
+                    {run.spec?.verificationMode === "harness" || run.result?.verification?.delegated ? "此任务将候选交给 SWE-bench 官方 harness 判定；下方显示导入的官方结果。" : run.spec ? "在相同镜像的独立容器中验证原始版本失败，再验证重新应用多文件补丁后的版本通过。" : "仅将候选 pricing.py 放入新环境，使用固定测试验证。"}
                   </p>
-                  {run.result?.verification ? (
+                  {run.spec?.verificationMode === "harness" || run.result?.verification?.delegated ? (
+                    <span className={`status ${run.evaluation?.status === "resolved" ? "succeeded" : "failed"}`}>
+                      {run.evaluation ? `官方 ${run.evaluation.status}` : "等待官方判定"}
+                    </span>
+                  ) : run.result?.verification?.passed != null ? (
                     <>
                       <span
                         className={`status ${run.result.verification.passed ? "succeeded" : "failed"}`}
@@ -877,6 +901,17 @@ function Workspace() {
                   )}
                   {run.result?.error && (
                     <div className="error">{run.result.error}</div>
+                  )}
+                  {diagnosis.data && (
+                    <div className="memory-card">
+                      <strong>失败过程诊断 · 只读</strong>
+                      <p>终止原因：{diagnosis.data.stop_reason || "未知"}；模型调用 {diagnosis.data.model_calls ?? "未知"} 次。</p>
+                      <p>{diagnosis.data.first_observed_delta
+                        ? `第 ${diagnosis.data.first_observed_delta.model_calls} 次调用后的检查点首次观测到 ${diagnosis.data.first_observed_delta.bytes} bytes 改动。`
+                        : "未观测到有效过程改动。"}</p>
+                      <p>{diagnosis.data.formal_candidate_present ? "有正式候选，是否通过以独立验收为准。" : "没有正式提交的候选补丁。"}
+                        {diagnosis.data.diagnostic_delta ? ` 末次有效过程快照 ${diagnosis.data.diagnostic_delta.bytes} bytes；未提交、未验收。` : ""}</p>
+                    </div>
                   )}
                 </div>
               )}

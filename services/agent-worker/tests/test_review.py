@@ -109,6 +109,7 @@ def test_feedback_keeps_position_severity_and_suggestion():
 
 def test_the_live_reviewer_makes_one_model_call_and_reports_its_cost(monkeypatch):
     """The live path cannot run without credits, so its seam is pinned with a fake client."""
+    monkeypatch.setenv("MODEL_POLICY", "free-quota")
     litellm = pytest.importorskip("litellm")
     from types import SimpleNamespace
 

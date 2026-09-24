@@ -6,9 +6,24 @@
 
 复用 mini-swe-agent 2.4.6（MIT）的 Agent 循环、模型接入与轨迹格式，以 submodule 固定提交 `04d809ceab9df28f9adaed044884180159172930`，保留上游许可证。RepoFix 在外部新增任务管理、跨语言 Worker 协议、Docker 沙箱适配、独立验收和网页工作台。
 
+## 现在能展示什么
+
+一次仓库修复由控制端持久化任务并经 Outbox/RabbitMQ 分发；Worker 在固定 commit 的沙箱中运行 Agent，导出候选补丁。控制端用租约、代次及检查点处理重复消息和中断；候选是否有效由独立验收决定。最终应用到用户 checkout 时，还要人工批准具体补丁与目标文件指纹。Agent 自称完成、验收通过和用户交付是三个不同状态。
+
+面试入口是 [`/showcase`](http://localhost:3100/showcase) 的零模型确定性演示：打开一条任务，看版本、事件、候选 diff 与验收证据。服务未启动时，演示不能作为在线证据。三条主线是**可靠调度、独立验收、版本绑定交付**。Agent 基础循环、模型接入及轨迹格式来自上游；SWE-bench 最终判分来自官方 harness，不是本项目自研评分器。
+
+| 工作区模式 | 适用范围与上下文 | 开发期权限和检查点 | 最终验收 |
+| --- | --- | --- | --- |
+| `snapshot` | 受限文本仓库，可选 full/compact/managed 上下文 | shell 写操作可按策略审批；检查点保存受限文本、会话和预算，不保存进程或环境 | 本项目将候选重放到新沙箱，对基线/候选运行同一组独立测试 |
+| `image` | 固定 commit 的既有仓库镜像，强制 full 上下文 | shell 审批停用；检查点保存仓库 Git delta、会话和预算，不保存完整容器状态 | SWE-bench 任务由官方 harness 评分；本项目先检查补丁产生及来源绑定 |
+
+**冻结结果及口径。** Verified Mini 全 50 个不同 issue 的本地首轮：官方 harness 判定 **33/50 resolved**，其中 30 题调用上限 60、20 题上限 100；另 10 次 Reviewer 开启配对和 10 次旧失败重试不混入首轮分母。最多两次尝试的最好值为 34/50，不是同配置 pass@1 或 Verified 500 榜单。Aider Polyglot Python 34 题适配评测：公开候选测试 33/34，通过平台严格验收 22/34，两者判据不同。三项自建跨文件任务各三次、三种上下文对照：full/compact/managed 各 6/9；短任务里 managed 未带来成功数或 token 优势。所有评测均保留失败和空补丁；不将小样本 Reviewer 差异写成稳定提升。
+
+`scripts/interview_metrics.py` 只读取冻结的 Mini 逐次 CSV、逐题 manifest 与归档 `result.json`，核对 run ID、patch hash、官方判定和首轮分母；另核对 Aider 34 与上下文 27 次。输出含 schema version 和输入 SHA-256 的派生 JSON，不会运行模型或改写原始评测。运行时显式传入 `--mini-csv`、`--artifact-root`、`--aider-runs`、`--context-report` 和 `--output`；原始 CSV 与运行工件在本地 `runtime/` 及面试材料目录中，Git 仓库不包含它们。
+
 **命名说明：** 项目展示名与仓库名由 RepoPilot 改为 RepoFix。已有 Python `repopilot` 模块、Compose 项目名、RabbitMQ 队列、数据库用户及持久化标签继续沿用原内部标识，避免使既有运行记录、检查点和本机数据失效。历史评测保留运行时的原名称与镜像哈希，不追改证据。
 
-## 2026-09-19 审查修正
+## 历史审查与修正（2026-09-19）
 
 当前实现与下方历史实验记录的区别：
 
@@ -58,14 +73,16 @@ docker compose up -d --force-recreate api worker
 ## 验证
 
 ```bash
-npx pnpm@10.17.1 install --frozen-lockfile
-npx pnpm@10.17.1 build
-uv run ruff check services scripts
-uv run pytest
-uv run python scripts/smoke.py
+uv run --no-sync python scripts/doctor.py
+uv run --no-sync python scripts/verify_interview.py unit
+uv run --no-sync python scripts/verify_interview.py build
+# 仅在隔离测试栈运行中、且无需真实模型时：
+uv run --no-sync python scripts/verify_interview.py smoke
 ```
 
-默认冒烟仅使用确定性模型，另用 `--live` 启动一次有界真实模型任务。结果保存在 `runtime/validation/`，可从页面查看每次运行。
+`unit` 在 `free-quota` 与 `official-deepseek` 两种宿主策略下运行无 Docker 测试；测试阻止意外 provider 调用。`build` 构建 API/Web。Docker 集成、故障注入和确定性部署冒烟是独立层级；`scripts/protocol_check.py` 会注入故障，必须在隔离栈且 Worker 停止、没有在途任务时执行。默认 smoke 仅使用确定性模型；`--live` 属于另行授权的真实模型评测。工件保存在本地 `runtime/`，不提交。
+
+失败运行可用 `scripts/diagnose_run.py <run-id> --output-dir <dir>` 只读扫描检查点，输出独立 `diagnostic.json/patch`；后者是**未提交、未验收的过程快照**，不会进入 `result.patch` 或官方预测。`scripts/interview_pack.py` 从明确的两条冻结 run 生成本地离线 HTML 证据包。`scripts/public_test_entry.py` 可对固定 base checkout 的已跟踪文件预检有界开发 smoke 入口；目前是只读辅助工具，尚未自动接入 image 任务，历史 Mini 任务的通用 `pytest` 命令与评分保持原样。
 
 ## 仓库任务与基线
 
@@ -188,7 +205,7 @@ python scripts/delivery_smoke.py
 - **共享预算**：`reviewBudget=shared` 时 Coder 与 Reviewer 共用原有调用上限；`extra` 保留每轮修订额外 5 步的默认行为。网页可选，API 持久化并纳入幂等创建检查。“同预算”指相同调用数、单次输出和时间上限，不表示实际输入 token 或费用相等。
 - **判定权仍在验收**：修订额度用尽仍有阻断项时记录为未解决，独立验收照常判定；评审本身失败也继续，不会因为评审把运行卡死。评审调用计入本次运行的模型用量（与执行者共用预算）。
 - **工作台**：候选补丁页签用只读的 Monaco 侧栏对比固定基准与候选版本，评审意见可以跳到它命名的行；评审历史按轮次显示，并标出哪一份已被修订取代。
-- **可观测**：控制端为每条投递生成 W3C `traceparent` 放进队列消息，Worker 续接成一次运行的 trace（attempt 之下挂着模型调用、工具执行、评审与两次验收），导出到 Compose 内的 Jaeger。
+- **可观测**：控制端为每条投递生成 W3C `traceparent` 放进队列消息，Worker 续接并导出模型调用、工具执行、评审和适用的验收 spans 到 Jaeger。控制端当前未导出 API producer span，不能据此推断 API、数据库和 broker 的完整跨服务时延。
 
 ```bash
 # 评审闭环：评审发生在验收前、一轮有限修订、旧评审过期、复评干净（确定性任务）

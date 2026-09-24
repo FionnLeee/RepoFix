@@ -92,6 +92,7 @@ def test_image_artifacts_keep_more_than_sixty_files_and_large_text(image, tmp_pa
 
 
 def test_paid_models_rejected_before_network(monkeypatch):
+    monkeypatch.setenv("MODEL_POLICY", "free-quota")
     import litellm
     from repopilot.model_policy import FREE_MODELS, require_free_model
     from repopilot.review import ModelReviewer

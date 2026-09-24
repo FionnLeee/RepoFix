@@ -30,6 +30,7 @@ class UnusedEnvironment:
 
 
 def test_repeated_format_failure_preserves_all_usage_and_redacts_error(tmp_path, monkeypatch):
+    monkeypatch.setenv("MODEL_POLICY", "free-quota")
     monkeypatch.setenv("ARTIFACT_ROOT", str(tmp_path))
     monkeypatch.setenv("OPENAI_API_KEY", "test-secret")
     run = {"id": str(uuid4()), "mode": "live"}

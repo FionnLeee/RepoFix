@@ -5,8 +5,8 @@ harness applies an instance's own test patch in the official image and decides F
 and PASS_TO_PASS. The two answers are not interchangeable, so this module only translates:
 an instance becomes a repository task, a finished run becomes a prediction the harness can
 read, and the harness report is summarised for the run record. Runs translated here carry
-``verificationMode: harness``: the worker still proves the patch replays onto the pinned
-commit, and the harness owns the verdict.
+``verificationMode: harness``: snapshot mode checks replay locally; image mode leaves
+``patch_replayed`` unknown and delegates applying and judging the patch to the harness.
 """
 
 import hashlib

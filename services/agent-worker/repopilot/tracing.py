@@ -2,9 +2,9 @@
 
 Tracing stays off unless ``OTEL_EXPORTER_OTLP_ENDPOINT`` is set, and a collector that is
 unreachable never fails a run: spans are batched, exported best-effort and dropped on error.
-The trace context the control plane puts on the queue message becomes the parent of the
-attempt span, so one trace covers TypeScript, the broker and Python; the slow step of a run
-can then be found in the collector instead of by comparing log timestamps.
+The trace context the control plane puts on the queue message becomes the parent context
+for Worker spans. The control plane currently generates that context without an exported
+API producer span, so these spans do not prove end-to-end API or broker timing.
 """
 
 import logging
