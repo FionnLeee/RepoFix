@@ -3,8 +3,8 @@ import uuid
 
 import docker
 import pytest
-from repopilot.fixture import FIXED, SOURCE
-from repopilot.runtime import Sandbox
+from repofix.fixture import FIXED, SOURCE
+from repofix.runtime import Sandbox
 
 
 @pytest.mark.docker

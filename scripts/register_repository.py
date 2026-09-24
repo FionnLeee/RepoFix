@@ -9,7 +9,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "services/agent-worker"))
-from repopilot.repository import digest, validate_files  # noqa: E402
+from repofix.repository import digest, validate_files  # noqa: E402
 
 
 def register(repo: Path, repo_id: str, commit: str, output: Path):

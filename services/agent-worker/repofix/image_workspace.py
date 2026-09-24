@@ -9,7 +9,7 @@ import hashlib
 import json
 import uuid
 
-from repopilot.repository import validate_files
+from repofix.repository import validate_files
 
 
 def git(sandbox, *args, optional=False):
@@ -77,7 +77,7 @@ def restore(sandbox, files):
         raise ValueError("Image checkpoint base mismatch")
     patch = base64.b64decode("".join(files[name] for name in sorted(files) if name.startswith("delta/")), validate=True)
     if patch:
-        filename = "repopilot-restore-" + uuid.uuid4().hex + ".patch"
+        filename = "repofix-restore-" + uuid.uuid4().hex + ".patch"
         try:
             # Docker archive extraction does not reliably target tmpfs mounts; write through
             # exec in bounded argv chunks instead. The random path never traverses the repo.

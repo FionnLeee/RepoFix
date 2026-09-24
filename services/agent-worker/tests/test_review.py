@@ -1,7 +1,7 @@
 from types import SimpleNamespace
 
 import pytest
-from repopilot import review
+from repofix import review
 
 RUN = {"id": "run-1", "mode": "demo", "task": "修复金额与运费的口径", "reviewPolicy": "auto"}
 SPEC = SimpleNamespace(allowedPaths=["money.py"], testCommand="python -m pytest -q")

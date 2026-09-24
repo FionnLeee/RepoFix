@@ -15,11 +15,11 @@ from minisweagent.exceptions import FormatError, InterruptAgentFlow, LimitsExcee
 from minisweagent.models.litellm_textbased_model import LitellmTextbasedModel
 from minisweagent.models.test_models import DeterministicModel, make_output
 
-from repopilot.fixture import DEVELOPMENT_TESTS, FIXED, SOURCE, VERIFICATION_TESTS
-from repopilot.model_policy import request_options, require_authorized_model
-from repopilot.policy import evaluate as evaluate_policy
-from repopilot.quota import QuotaTimeout, QuotaUnavailable
-from repopilot.reporting import usage_summary
+from repofix.fixture import DEVELOPMENT_TESTS, FIXED, SOURCE, VERIFICATION_TESTS
+from repofix.model_policy import request_options, require_authorized_model
+from repofix.policy import evaluate as evaluate_policy
+from repofix.quota import QuotaTimeout, QuotaUnavailable
+from repofix.reporting import usage_summary
 
 SYSTEM = """You repair a Python repository in /workspace. You can execute commands only inside this isolated workspace.
 Return a brief action description and exactly one command in a fenced block tagged mswea_bash_command.
@@ -74,7 +74,7 @@ class Sandbox:
             security_opt=["no-new-privileges:true"],
             environment={"PYTHONDONTWRITEBYTECODE": "1"},
             tmpfs=mounts,
-            labels={"repopilot.managed": "sandbox", "repopilot.run": run_id, "repopilot.created": str(time.time())},
+            labels={"repofix.managed": "sandbox", "repofix.run": run_id, "repofix.created": str(time.time())},
         )
         try:
             self.put(files if files is not None else {
@@ -87,7 +87,7 @@ class Sandbox:
     def put(self, files: dict[str, str]):
         if not set(files).issubset(self.initial_paths):
             raise ValueError("Only explicit fixture files may be initialized")
-        from repopilot.repository import safe_path
+        from repofix.repository import safe_path
         script = "import sys; from pathlib import Path; p=Path(sys.argv[3])/sys.argv[1]; p.parent.mkdir(parents=True,exist_ok=True); p.write_text(sys.argv[2],encoding='utf-8')"
         for name, value in files.items():
             safe_path(name)
@@ -117,10 +117,10 @@ class Sandbox:
                 }
             )
         self.index += 1
-        if self.archive_logs and command.startswith("repopilot_read_log "):
-            match = re.fullmatch(r"repopilot_read_log ([0-9a-f]{32}) ([0-9]{1,8})", command)
+        if self.archive_logs and command.startswith("repofix_read_log "):
+            match = re.fullmatch(r"repofix_read_log ([0-9a-f]{32}) ([0-9]{1,8})", command)
             if not match:
-                raise ValueError("Expected repopilot_read_log <id> <byte-offset>")
+                raise ValueError("Expected repofix_read_log <id> <byte-offset>")
             path = self.log_folder / f"{match[1]}.log"
             if not path.is_file():
                 output = {"output": "Log not found in this run", "returncode": 1, "exception_info": ""}
@@ -136,7 +136,7 @@ class Sandbox:
         started = time.monotonic()
         wall = time.time()
         result = self.container.exec_run(
-            ["sh", "-c", script, "repopilot-tool", command, output_path], workdir=self.workspace, user=self.user
+            ["sh", "-c", script, "repofix-tool", command, output_path], workdir=self.workspace, user=self.user
         )
         output = {
             "output": result.output.decode(errors="replace"),
@@ -153,7 +153,7 @@ class Sandbox:
                     raise ValueError("Tool log is not a readable regular file")
                 self.log_folder.mkdir(parents=True, exist_ok=True)
                 (self.log_folder / f"{log_id}.log").write_bytes(full.output)
-                output["output"] += f"\n[Archived output: repopilot_read_log {log_id} 0; capture limit 4 MiB]"
+                output["output"] += f"\n[Archived output: repofix_read_log {log_id} 0; capture limit 4 MiB]"
         finally:
             self.container.exec_run(["rm", "-f", "--", output_path])
         self.emit(
@@ -232,7 +232,7 @@ class TracedAgent(DefaultAgent):
         self.emit, self.cancelled = emit, cancelled
 
     def enable_checkpoints(self, run, source):
-        from repopilot.checkpoint import CheckpointStore
+        from repofix.checkpoint import CheckpointStore
         self.checkpoints = CheckpointStore.for_agent(self, run, source)
 
     def enable_approvals(self, policy, allowed_paths, request):
@@ -243,9 +243,9 @@ class TracedAgent(DefaultAgent):
         self.quota = quota
 
     def restore_checkpoint(self, reference, *, allow_previous_generation=False, resume_action=None):
-        from repopilot.checkpoint import agent_signature
-        from repopilot.repository import digest
-        from repopilot.repository_runtime import read_tree
+        from repofix.checkpoint import agent_signature
+        from repofix.repository import digest
+        from repofix.repository_runtime import read_tree
 
         if not self.checkpoints:
             raise ValueError("Checkpoint store is not configured")
@@ -348,8 +348,8 @@ class TracedAgent(DefaultAgent):
     def persist_review(self):
         if not self.review_state:
             return
-        from repopilot import review
-        from repopilot.checkpoint import atomic_json
+        from repofix import review
+        from repofix.checkpoint import atomic_json
 
         state = self.review_state
         if state.get("phase") == "revising":
@@ -420,7 +420,7 @@ class TracedAgent(DefaultAgent):
 
     def execute_actions(self, message):
         if self.approval_policy != "off" and self.request_approval:
-            from repopilot.checkpoint import checksum
+            from repofix.checkpoint import checksum
             # One replay is authorised at a time, and the gate covers the whole step: a
             # message that carries several actions must not slip a later write past it.
             approved, self.approved_action_sha = self.approved_action_sha, None
@@ -436,8 +436,8 @@ class TracedAgent(DefaultAgent):
             self._checkpoint_safe = True
             raise
         if self.context_manager:
-            from repopilot.repository import digest
-            from repopilot.repository_runtime import read_tree
+            from repofix.repository import digest
+            from repofix.repository_runtime import read_tree
             workspace_hash = digest(read_tree(self.env, quiescent=True))
             for observation in result:
                 observation.setdefault("extra", {})["workspace_sha256"] = workspace_hash
@@ -446,7 +446,7 @@ class TracedAgent(DefaultAgent):
 
     def pause_for_approval(self, action, verdict):
         """Save the pending action at a safe boundary, register it, then stop this attempt."""
-        from repopilot.checkpoint import checksum
+        from repofix.checkpoint import checksum
         pending = {"action": action, "action_sha256": checksum(action), "reason": verdict["reason"],
                    "targets": verdict["targets"], "policy": verdict["policy"]}
         reference = self.checkpoints.save(self, "awaiting_approval", pending_action=pending)
@@ -514,7 +514,7 @@ class TracedAgent(DefaultAgent):
         self.compact_context()
         prepared = None
         if self.context_manager:
-            from repopilot.repository_runtime import read_tree
+            from repofix.repository_runtime import read_tree
             prepared = self.context_manager.prepare(self, read_tree(self.env, quiescent=True))
         if self.checkpoints:
             if self.checkpoints.latest is None:
@@ -563,7 +563,7 @@ class TracedAgent(DefaultAgent):
 
 def execute_run(run: dict, emit, cancelled: threading.Event, control=None, quota=None, tracing=None) -> dict:
     """One attempt, inside its own trace span, whichever execution path it takes."""
-    from repopilot.tracing import span
+    from repofix.tracing import span
 
     with span(tracing, "attempt", run_id=run["id"], generation=run.get("generation"),
               mode=run.get("mode"), baseline=run.get("baselineId")):
@@ -572,12 +572,12 @@ def execute_run(run: dict, emit, cancelled: threading.Event, control=None, quota
 
 def _execute(run: dict, emit, cancelled: threading.Event, control=None, quota=None, tracing=None) -> dict:
     if run.get("spec"):
-        from repopilot.repository_runtime import execute_repository_run
+        from repofix.repository_runtime import execute_repository_run
         return execute_repository_run(run, emit, cancelled, control, quota, tracing)
     folder = Path(os.getenv("ARTIFACT_ROOT", "runtime/artifacts")) / run["id"]
     folder.mkdir(parents=True, exist_ok=True)
     source = {"pricing.py": SOURCE, "test_pricing.py": DEVELOPMENT_TESTS}
-    from repopilot import recovery
+    from repofix import recovery
     plan = control("resume-plan", {"generation": run["generation"]}) if control else {"mode": "fresh"}
     if plan["mode"] == "wait":
         checkpoint = recovery.load_resume(run, plan["checkpoint"], source)

@@ -17,7 +17,7 @@ def build_repository(repo: Path) -> str:
     """Materialise the baseline tasks as one commit; identical inputs give an identical commit id."""
     env = os.environ.copy()
     env.update(GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=os.devnull,
-               GIT_AUTHOR_NAME="RepoPilot Baseline", GIT_COMMITTER_NAME="RepoPilot Baseline",
+               GIT_AUTHOR_NAME="RepoFix Baseline", GIT_COMMITTER_NAME="RepoFix Baseline",
                GIT_AUTHOR_EMAIL="baseline@example.invalid", GIT_COMMITTER_EMAIL="baseline@example.invalid",
                GIT_AUTHOR_DATE="2026-09-16T00:00:00Z", GIT_COMMITTER_DATE="2026-09-16T00:00:00Z")
 

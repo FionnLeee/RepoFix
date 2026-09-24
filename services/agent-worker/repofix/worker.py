@@ -10,11 +10,11 @@ import docker
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-from repopilot import tracing as tracing_module
-from repopilot.quota import ModelQuota
-from repopilot.reaper import reap
-from repopilot.reporting import failure_result
-from repopilot.runtime import ApprovalPaused, Cancelled, OwnershipLost, execute_run
+from repofix import tracing as tracing_module
+from repofix.quota import ModelQuota
+from repofix.reaper import reap
+from repofix.reporting import failure_result
+from repofix.runtime import ApprovalPaused, Cancelled, OwnershipLost, execute_run
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
@@ -171,7 +171,7 @@ async def main():
     async with connection:
         channel = await connection.channel()
         await channel.set_qos(prefetch_count=1)
-        queue = await channel.declare_queue("repopilot.runs.v1", durable=True)
+        queue = await channel.declare_queue("repofix.runs.v1", durable=True)
         await queue.consume(lambda message: handle(message, quota))
         reaper_headers = {"authorization": f"Bearer {os.environ['WORKER_TOKEN']}"}
         async with httpx.AsyncClient(base_url=os.environ.get("CONTROL_API_URL", "http://api:3101"),

@@ -64,7 +64,7 @@ def failure_result(run, error):
         folder.mkdir(parents=True, exist_ok=True)
         (folder / "result.json").write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
         # A separate, read-only process snapshot summary never becomes result.patch.
-        from repopilot.diagnostics import diagnose
+        from repofix.diagnostics import diagnose
 
         diagnosis, delta = diagnose(run["id"], folder.parent)
         (folder / "diagnostic.json").write_text(json.dumps(diagnosis, ensure_ascii=False, indent=2), encoding="utf-8")

@@ -1,4 +1,4 @@
-"""跑一个可复现的 SWE-bench 子集：筛环境 → 跑 RepoPilot → 官方判定 → 出表。
+"""跑一个可复现的 SWE-bench 子集：筛环境 → 跑 RepoFix → 官方判定 → 出表。
 
 一条命令走完整条链路，避免手工四步（也避免手工步骤带来的挑选空间）：
 
@@ -10,7 +10,7 @@
 1. 镜像不存在就拉取（每个约 4 GB，磁盘是主要约束）。
 2. **gold 筛选**：先用实例自带的 gold 补丁跑一遍官方 harness。未通过的实例单列为
    本机暂不可评测；这不证明任何其他补丁都不可能通过。
-3. 对筛过的实例各提交一次 RepoPilot 运行（真实模型），等它们到终态。
+3. 对筛过的实例各提交一次 RepoFix 运行（真实模型），等它们到终态。
 4. 导出预测：没产出补丁的尝试按"空提交"计入（官方 harness 自己会把它判为未解决）。
 5. 一条 harness 命令判定全部实例，报告写入 runtime/validation/。
 
@@ -31,7 +31,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "services/agent-worker"))
 sys.path.insert(0, str(ROOT / "scripts"))
 import swebench as cli  # noqa: E402  (this directory's CLI helpers)
-from repopilot import swebench  # noqa: E402
+from repofix import swebench  # noqa: E402
 
 CACHE = cli.CACHE
 VALIDATION = cli.VALIDATION
@@ -83,7 +83,7 @@ def gold_predictions(instances, target):
     lines = []
     for instance_id in instances:
         row = json.loads((CACHE / f"{instance_id}.json").read_text(encoding="utf-8"))
-        lines.append(json.dumps({"instance_id": instance_id, "model_name_or_path": "repopilot-preflight-gold",
+        lines.append(json.dumps({"instance_id": instance_id, "model_name_or_path": "repofix-preflight-gold",
                                  "model_patch": row["patch"]}, ensure_ascii=False))
     target.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return target

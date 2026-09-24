@@ -10,7 +10,7 @@ from pathlib import Path
 import httpx
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "services/agent-worker"))
-from repopilot.reporting import trajectory_summary  # noqa: E402
+from repofix.reporting import trajectory_summary  # noqa: E402
 
 
 def summarize(report):

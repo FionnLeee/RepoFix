@@ -6,8 +6,8 @@ from uuid import uuid4
 
 import litellm
 import pytest
-from repopilot.reporting import failure_result, trajectory_summary, usage_summary
-from repopilot.runtime import SafeModel, TracedAgent
+from repofix.reporting import failure_result, trajectory_summary, usage_summary
+from repofix.runtime import SafeModel, TracedAgent
 
 
 class RecordedInvalidModel(SafeModel):

@@ -172,7 +172,7 @@ class Store extends PrismaClient implements OnModuleInit, OnModuleDestroy {
       }
     });
     const channel = await connection.createConfirmChannel();
-    await channel.assertQueue("repopilot.runs.v1", { durable: true });
+    await channel.assertQueue("repofix.runs.v1", { durable: true });
     this.connection = connection;
     this.channel = channel;
     return channel;
@@ -211,7 +211,7 @@ class Store extends PrismaClient implements OnModuleInit, OnModuleDestroy {
         for (const item of await this.outbox.findMany({ where: { publishedAt: null }, orderBy: { id: "asc" }, take: 20 })) {
           try {
             channel.sendToQueue(
-              "repopilot.runs.v1",
+              "repofix.runs.v1",
               Buffer.from(
                 JSON.stringify({
                   schema_version: 1,
@@ -528,7 +528,7 @@ class Api {
     if (spec) {
       if (!baseline && !body.task) throw new BadRequestException("指定仓库需要任务说明");
       if (body.mode === "demo" && !baseline) throw new BadRequestException("自定义仓库仅支持真实模型；预设演示仅用于内置基线");
-      if ((spec.subdir && !pathPattern.test(spec.subdir)) || spec.allowedPaths.some((p: string) => p.toLowerCase().split("/").includes(".git") || p.startsWith("_repopilot_verify/")))
+      if ((spec.subdir && !pathPattern.test(spec.subdir)) || spec.allowedPaths.some((p: string) => p.toLowerCase().split("/").includes(".git") || p.startsWith("_repofix_verify/")))
         throw new BadRequestException("仓库路径无效");
       const entries = Object.entries(spec.verificationFiles || {});
       if (spec.verificationMode === "harness") {

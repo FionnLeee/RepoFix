@@ -1,4 +1,4 @@
-from repopilot.policy import evaluate
+from repofix.policy import evaluate
 
 
 def test_allowed_and_read_only_actions_do_not_require_approval():

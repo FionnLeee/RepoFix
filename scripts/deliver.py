@@ -18,7 +18,7 @@ import httpx
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "services/agent-worker"))
-from repopilot.delivery import Checkout, DeliveryError, deliver, survey  # noqa: E402
+from repofix.delivery import Checkout, DeliveryError, deliver, survey  # noqa: E402
 
 STATE_DIR = ROOT / "runtime/deliveries"
 TERMINAL = ("REJECTED", "APPLIED", "INVALIDATED", "NEEDS_ATTENTION")

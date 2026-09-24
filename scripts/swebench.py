@@ -1,10 +1,10 @@
 """SWE-bench 接线：实例翻译成任务、运行导出成预测、官方报告汇总成记录。
 
 本脚本不判定任何东西。官方 harness 在官方镜像里用实例自带的测试补丁判定 FAIL_TO_PASS／
-PASS_TO_PASS，RepoPilot 只负责产出补丁；两者的结论不可互换，所以这里只做翻译与汇总。
+PASS_TO_PASS，RepoFix 只负责产出补丁；两者的结论不可互换，所以这里只做翻译与汇总。
 
   preflight  检查链路是否就绪，并把缺口与所需资源写清楚
-  prepare    把一个实例翻译成 RepoPilot 运行（--submit 直接提交）
+  prepare    把一个实例翻译成 RepoFix 运行（--submit 直接提交）
   export     把已完成的实例运行写成官方 predictions.jsonl
   import     把官方报告汇总进本地记录
 
@@ -26,13 +26,13 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "services/agent-worker"))
-from repopilot import swebench  # noqa: E402
-from repopilot.model_policy import require_authorized_model  # noqa: E402
+from repofix import swebench  # noqa: E402
+from repofix.model_policy import require_authorized_model  # noqa: E402
 
 API = os.getenv("CONTROL_API_URL", "http://localhost:3101")
 CACHE = Path(os.getenv("SWEBENCH_CACHE", str(ROOT / "runtime" / "swebench")))
 VALIDATION = ROOT / "runtime" / "validation"
-HARNESS_IMAGE = os.getenv("SWEBENCH_IMAGE", "repopilot-swebench")
+HARNESS_IMAGE = os.getenv("SWEBENCH_IMAGE", "repofix-swebench")
 SAMPLE = {
     "instance_id": "sample__sample-1", "repo": "psf/requests", "base_commit": "0" * 40,
     "problem_statement": "示例：用本地缓存的实例文件替换它。",
@@ -229,7 +229,7 @@ def main():
     export_parser.add_argument("--run-id", action="append", required=True,
                                help="精确选择本轮 run ID；可重复，不能按历史非空补丁挑选")
     export_parser.add_argument("--out", default=str(VALIDATION / "swebench-predictions.jsonl"))
-    export_parser.add_argument("--model", default="repopilot")
+    export_parser.add_argument("--model", default="repofix")
     import_parser = sub.add_parser("import")
     import_parser.add_argument("--report", required=True)
     import_parser.add_argument("--out", default=str(VALIDATION / "swebench-report.json"))

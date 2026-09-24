@@ -11,7 +11,7 @@ import os
 import time
 from pathlib import Path
 
-from repopilot.quota import ModelQuota
+from repofix.quota import ModelQuota
 
 BURST, HOLD = 6, 1.0
 quota = ModelQuota.from_env()

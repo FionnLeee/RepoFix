@@ -54,7 +54,7 @@ const sha = (value: string) => createHash("sha256").update(value, "utf8").digest
 /** The executor's secret hash never leaves the database. */
 const publicRow = ({ executorSha256, ...row }: Record<string, unknown>) => row;
 
-/** Paths a Git patch writes, relative to the patch root, mirroring repopilot.delivery.patch_files. */
+/** Paths a Git patch writes, relative to the patch root, mirroring repofix.delivery.patch_files. */
 export function patchChanges(patch: string): Map<string, string> {
   const changes = new Map<string, string>();
   const lines = patch.split("\n");

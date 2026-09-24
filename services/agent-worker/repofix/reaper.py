@@ -8,7 +8,7 @@ container instead of reusing an unexplained one.
 
 import time
 
-LABEL = "repopilot.managed=sandbox"
+LABEL = "repofix.managed=sandbox"
 
 
 def reap(client, active_runs, *, min_age=90, now=None):
@@ -17,9 +17,9 @@ def reap(client, active_runs, *, min_age=90, now=None):
     removed, kept, failed = [], [], []
     for container in client.containers.list(all=True, filters={"label": LABEL}):
         labels = container.labels or {}
-        run_id = labels.get("repopilot.run", "")
+        run_id = labels.get("repofix.run", "")
         try:
-            created = float(labels.get("repopilot.created", "0"))
+            created = float(labels.get("repofix.created", "0"))
         except ValueError:
             created = 0.0
         age = now - created

@@ -1,5 +1,5 @@
 import pytest
-from repopilot import tracing
+from repofix import tracing
 
 
 @pytest.fixture

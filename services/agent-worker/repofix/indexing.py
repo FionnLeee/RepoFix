@@ -11,8 +11,8 @@ from pathlib import Path
 import httpx
 from qdrant_client import QdrantClient, models
 
-from repopilot.checkpoint import checksum
-from repopilot.repository import digest
+from repofix.checkpoint import checksum
+from repofix.repository import digest
 
 REVISION = "52398278842ec682c6f32300af41344b1c0b0bb2"
 

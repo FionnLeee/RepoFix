@@ -2462,7 +2462,7 @@ wheels = [
 ]
 
 [[package]]
-name = "repopilot-worker"
+name = "repofix-worker"
 version = "0.1.0"
 source = { virtual = "." }
 dependencies = [

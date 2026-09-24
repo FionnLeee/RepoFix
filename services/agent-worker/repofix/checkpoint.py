@@ -13,7 +13,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from repopilot.repository import digest, validate_files
+from repofix.repository import digest, validate_files
 
 MAX_CHECKPOINT_BYTES = 32 * 1024 * 1024
 
@@ -141,7 +141,7 @@ class CheckpointStore:
     def save(self, agent, phase, pending_action=None):
         from minisweagent.models.test_models import DeterministicModel
 
-        from repopilot.repository_runtime import read_tree
+        from repofix.repository_runtime import read_tree
 
         files = read_tree(agent.env, quiescent=True)
         state = AgentState(
@@ -242,8 +242,8 @@ def load_registered(root, run_id, reference):
 
 def restore_check(run_id, generation, checkpoint_id=None):
     """Verify restoration in a fresh sandbox; never resume or change a business Run."""
-    from repopilot.repository_runtime import read_tree
-    from repopilot.runtime import Sandbox
+    from repofix.repository_runtime import read_tree
+    from repofix.runtime import Sandbox
 
     root = Path(os.getenv("ARTIFACT_ROOT", "runtime/artifacts"))
     run_id = str(uuid.UUID(run_id))
@@ -274,7 +274,7 @@ def restore_check(run_id, generation, checkpoint_id=None):
                       **({"workspace": workspace, "writable": True, "user": "0:0", "memory": "2g"} if image_mode else {}))
     try:
         if image_mode:
-            from repopilot import image_workspace
+            from repofix import image_workspace
             image_workspace.initialize(sandbox, checkpoint.files["image-base"])
             image_workspace.restore(sandbox, checkpoint.files)
         if sandbox.container.image.id != checkpoint.binding["image_id"] or read_tree(sandbox) != checkpoint.files:

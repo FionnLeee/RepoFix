@@ -1,7 +1,7 @@
 import pytest
 from pydantic import ValidationError
-from repopilot.fixture import FIXED, SOURCE
-from repopilot.worker import Message
+from repofix.fixture import FIXED, SOURCE
+from repofix.worker import Message
 
 
 def test_cross_language_contract_rejects_unknown_version_and_fields():

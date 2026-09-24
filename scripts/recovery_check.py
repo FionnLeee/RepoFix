@@ -23,15 +23,15 @@ terminal = ("SUCCEEDED", "FAILED", "CANCELLED", "INTERRUPTED")
 
 def psql(sql):
     return subprocess.run(
-        ["docker", "compose", "exec", "-T", "postgres", "psql", "-U", "repopilot", "-d", "repopilot", "-tAc", sql],
+        ["docker", "compose", "exec", "-T", "postgres", "psql", "-U", "repofix", "-d", "repofix", "-tAc", sql],
         cwd=root, capture_output=True, text=True, timeout=60, check=True,
     ).stdout.strip()
 
 
 def sandboxes():
     return subprocess.run(
-        ["docker", "ps", "-a", "--filter", "label=repopilot.managed=sandbox",
-         "--format", "{{.ID}} {{.Label \"repopilot.run\"}}"],
+        ["docker", "ps", "-a", "--filter", "label=repofix.managed=sandbox",
+         "--format", "{{.ID}} {{.Label \"repofix.run\"}}"],
         capture_output=True, text=True, timeout=60, check=True,
     ).stdout.strip().splitlines()
 
@@ -99,9 +99,9 @@ assert not leftovers, leftovers
 
 # A container whose owning process died outright is reclaimed by the worker's sweeper.
 orphan_run = str(uuid.uuid4())
-subprocess.run(["docker", "run", "-d", "--label", "repopilot.managed=sandbox",
-                "--label", f"repopilot.run={orphan_run}",
-                "--label", f"repopilot.created={time.time() - 600}",
+subprocess.run(["docker", "run", "-d", "--label", "repofix.managed=sandbox",
+                "--label", f"repofix.run={orphan_run}",
+                "--label", f"repofix.created={time.time() - 600}",
                 "python:3.12-slim", "sleep", "600"],
                capture_output=True, text=True, timeout=180, check=True)
 started, reclaimed = time.monotonic(), None

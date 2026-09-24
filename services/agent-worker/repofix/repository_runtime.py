@@ -9,10 +9,10 @@ from pathlib import Path
 
 from minisweagent.models.test_models import DeterministicModel, make_output
 
-from repopilot import image_workspace, recovery, review
-from repopilot.reporting import usage_summary
-from repopilot.repository import RepositoryTask, digest, load_snapshot, validate_files
-from repopilot.runtime import SYSTEM, ApprovalPaused, Cancelled, SafeModel, Sandbox, TracedAgent
+from repofix import image_workspace, recovery, review
+from repofix.reporting import usage_summary
+from repofix.repository import RepositoryTask, digest, load_snapshot, validate_files
+from repofix.runtime import SYSTEM, ApprovalPaused, Cancelled, SafeModel, Sandbox, TracedAgent
 
 # Runs in the container with isolated Python, and refuses links at every traversed directory.
 READ_TREE = """
@@ -45,7 +45,7 @@ print(json.dumps(files, ensure_ascii=True))
 VERIFY = """
 import sys, unittest, json, io
 sys.path.insert(0, '/workspace')
-suite = unittest.defaultTestLoader.discover('/workspace/_repopilot_verify', pattern='test_*.py')
+suite = unittest.defaultTestLoader.discover('/workspace/_repofix_verify', pattern='test_*.py')
 def ids(suite):
     result = []
     for item in suite:
@@ -55,7 +55,7 @@ test_ids = sorted(ids(suite))
 log = io.StringIO()
 result = unittest.TextTestRunner(stream=log, verbosity=2).run(suite)
 print(log.getvalue()[-12000:])
-print('REPOPILOT_REPORT=' + json.dumps(dict(tests=result.testsRun, ids=test_ids,
+print('REPOFIX_REPORT=' + json.dumps(dict(tests=result.testsRun, ids=test_ids,
     failures=len(result.failures), errors=len(result.errors), skipped=len(result.skipped),
     successful=result.wasSuccessful())))
 sys.exit(0 if result.wasSuccessful() and result.testsRun and not result.skipped else 1)
@@ -128,15 +128,15 @@ def make_patch_and_reapply(original, candidate, folder):
 
 
 def verify(files, spec, run_id, cancelled, image):
-    combined = {**files, **{f"_repopilot_verify/{k}": v for k, v in spec.verificationFiles.items()}}
+    combined = {**files, **{f"_repofix_verify/{k}": v for k, v in spec.verificationFiles.items()}}
     sandbox = Sandbox(run_id, lambda *_: None, cancelled, files=combined, image=image)
     try:
         # The caller resolves and sets an immutable image ID for this run.
         if sandbox.container.image.id != image:
             raise ValueError("Verification image changed during the run")
         result = sandbox.execute({"command": "python -I -c " + shlex.quote(VERIFY)})
-        reports = [line.removeprefix("REPOPILOT_REPORT=") for line in result["output"].splitlines()
-                   if line.startswith("REPOPILOT_REPORT=")]
+        reports = [line.removeprefix("REPOFIX_REPORT=") for line in result["output"].splitlines()
+                   if line.startswith("REPOFIX_REPORT=")]
         report = json.loads(reports[-1]) if len(reports) == 1 else None
         return {**result, "report": report}
     finally:
@@ -363,7 +363,7 @@ def execute_image_repository_run(run, spec, emit, cancelled, control=None, quota
                                 "The whole repository may be changed. The official harness judges the result with"
                                 " the instance's own tests after you submit.")
         if run["mode"] == "demo":
-            from repopilot.baseline import reference_commands
+            from repofix.baseline import reference_commands
             commands = reference_commands(run.get("baselineId"), spec, {}, revise=review.enabled(run),
                                           workspace_image=True)
             model = DeterministicModel(outputs=[make_output("预设基线动作", [{"command": cmd}], cost=0)
@@ -480,7 +480,7 @@ def execute_repository_run(run, emit, cancelled, control=None, quota=None, traci
                                 + ". Other files must remain unchanged. Independent tests run after submission.")
         if run["mode"] == "demo":
             # A demo reference is only loaded from the trusted baseline catalog, never from an API request.
-            from repopilot.baseline import reference_commands
+            from repofix.baseline import reference_commands
             commands = reference_commands(run.get("baselineId"), spec, source, revise=review.enabled(run))
             model = DeterministicModel(outputs=[make_output("预设基线动作", [{"command": cmd}], cost=0)
                                                 for cmd in commands], cost_per_call=0)
@@ -502,7 +502,7 @@ def execute_repository_run(run, emit, cancelled, control=None, quota=None, traci
                             output_path=folder / "trajectory.json")
         agent.tracing = tracing
         if run.get("contextMode") == "managed":
-            from repopilot.context import ContextManager
+            from repofix.context import ContextManager
             context_manager = ContextManager(run, source, emit, folder)
             if run["mode"] == "live":
                 model.config.model_kwargs["max_tokens"] = context_manager.config.output
