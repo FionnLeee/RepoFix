@@ -268,7 +268,7 @@ image 任务先将一次性容器中的仓库还原到指定 `base_commit`，再
 
 用户把本任务累计 token 上限提高到 60M 后，排除当天上午已经复测的 Mini 关闭组 10 题，从 9 月 23 日晚至 24 日凌晨的冻结运行中按原 run ID 固定其余 **5 条达到 60/60 次、以 `LimitsExceeded` 结束**的样本：SWE-bench Lite 的 pytest 关闭组与 xarray Reviewer 开启组，Mini 的 Django 一条及 Sphinx 两条 Reviewer 开启组。原题、Reviewer 设置和官方 `deepseek-flash` 保持不变；新运行最多 100 次共享调用，逐条用官方 harness 验收。**5/5 有效复测完成，0/5 resolved**。其中两条产出补丁但未解决，三条在 100 次后仍无最终补丁；不能声称提高上限提升修复率。历史和当前 Worker 构建不同，亦不能将差异只归因于预算。
 
-pytest 首次补跑在 51 次有用量回复后遇到连接错误，另以新 request key 补跑；基础设施中断不计入五条有效结果，已知 **511,927 token** 留在累计用量内。五条有效复测新增 **8,940,566 token**；所有评测累计已报告下界 **54,477,786 / 60,000,000**，为未返回用量的最后一个请求额外预留 1,200,000 后的保守上界 **55,677,786**。这批复测不改变 Mini 首轮 33/50，也不改变原十题 Reviewer 配对。逐次 run ID、预测、官方结果与轨迹留在本机 `runtime/validation/historical-60-limit-to-100-*` 和 `runtime/artifacts/`，不上传 Git。按用户最新要求，Docker Desktop 及 RepoFix 服务保持运行，API 的 `LIVE_ENABLED=false`；重启或查看现有服务不会自动提交付费模型任务。
+pytest 首次补跑在 51 次有用量回复后遇到连接错误，另以新 request key 补跑；基础设施中断不计入五条有效结果，已知 **511,927 token** 留在累计用量内。五条有效复测新增 **8,940,566 token**；所有评测累计已报告下界 **54,477,786 / 60,000,000**，为本次连接错误和历史三次服务端拒绝共四个未知请求各预留 1,200,000 后的保守上界 **59,277,786**。这批复测不改变 Mini 首轮 33/50，也不改变原十题 Reviewer 配对。逐次 run ID、预测、官方结果与轨迹留在本机 `runtime/validation/historical-60-limit-to-100-*` 和 `runtime/artifacts/`，不上传 Git。按用户最新要求，Docker Desktop 及 RepoFix 服务保持运行，API 的 `LIVE_ENABLED=false`；重启或查看现有服务不会自动提交付费模型任务。
 
 `full` 保留完整会话历史。`compact` 在历史超过 3,500 字符且有足够旧消息时，用不超过约 1,200 字符的历史摘录替换较早消息，保留系统规则、原始任务及最近四条消息。完整原始轨迹独立保存，token 汇总使用完整记录，页面显示压缩事件。
 
