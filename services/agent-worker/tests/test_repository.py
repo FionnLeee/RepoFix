@@ -6,16 +6,16 @@ from pathlib import Path
 
 import pytest
 from minisweagent.models.test_models import DeterministicModel
-from repopilot.baseline import task_definitions
-from repopilot.repository import RepositoryTask, safe_path
-from repopilot.repository_runtime import (
+from repofix.baseline import task_definitions
+from repofix.repository import RepositoryTask, safe_path
+from repofix.repository_runtime import (
     execute_repository_run,
     make_patch_and_reapply,
     read_tree,
     replay_patch,
     verify,
 )
-from repopilot.runtime import Sandbox, TracedAgent
+from repofix.runtime import Sandbox, TracedAgent
 
 
 @pytest.mark.docker
@@ -38,11 +38,11 @@ def test_an_image_workspace_works_inside_the_images_own_repository(tmp_path, mon
     import docker
 
     client = docker.from_env(timeout=120)
-    image, _ = client.images.build(path=str(context), tag="repopilot-image-workspace-test:latest", rm=True)
+    image, _ = client.images.build(path=str(context), tag="repofix-image-workspace-test:latest", rm=True)
     try:
         spec = RepositoryTask(source="registered:baseline-v1", commit="a" * 40, allowedPaths=sorted(task["reference"]),
                               verificationMode="harness", workspaceMode="image",
-                              sandboxImage="repopilot-image-workspace-test:latest", workspacePath="/testbed",
+                              sandboxImage="repofix-image-workspace-test:latest", workspacePath="/testbed",
                               testCommand="python -m unittest discover -v")
         run = {"id": str(uuid.uuid4()), "generation": 1, "mode": "demo", "baselineId": "checkout",
                "task": task["task"], "spec": spec.model_dump(), "reviewPolicy": "off"}

@@ -6,7 +6,7 @@ import hashlib
 import json
 import uuid
 
-from repopilot.checkpoint import load_registered
+from repofix.checkpoint import load_registered
 
 
 def image_delta(files):

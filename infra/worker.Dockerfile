@@ -9,4 +9,4 @@ COPY services/agent-worker services/agent-worker
 COPY benchmarks benchmarks
 COPY scripts scripts
 ENV PATH="/app/.venv/bin:$PATH" PYTHONPATH=/app/services/agent-worker MSWEA_SILENT_STARTUP=1 MSWEA_MODEL_RETRY_STOP_AFTER_ATTEMPT=2
-CMD ["python", "-m", "repopilot.worker"]
+CMD ["python", "-m", "repofix.worker"]

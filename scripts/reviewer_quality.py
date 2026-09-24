@@ -9,9 +9,9 @@ import time
 from pathlib import Path
 from types import SimpleNamespace
 
-from repopilot import review
-from repopilot.model_policy import require_authorized_model
-from repopilot.quota import ModelQuota
+from repofix import review
+from repofix.model_policy import require_authorized_model
+from repofix.quota import ModelQuota
 
 
 def main():

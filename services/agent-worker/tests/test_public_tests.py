@@ -1,7 +1,7 @@
 import subprocess
 
 import pytest
-from repopilot.public_tests import classify, discover
+from repofix.public_tests import classify, discover
 
 
 def checkout(tmp_path, files):

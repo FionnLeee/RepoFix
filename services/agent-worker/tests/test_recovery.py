@@ -2,9 +2,9 @@ import time
 import uuid
 
 import pytest
-from repopilot.checkpoint import AgentState, Checkpoint, atomic_json, checksum
-from repopilot.recovery import RecoveryError, approval_request, load_resume, resume_action
-from repopilot.repository import digest
+from repofix.checkpoint import AgentState, Checkpoint, atomic_json, checksum
+from repofix.recovery import RecoveryError, approval_request, load_resume, resume_action
+from repofix.repository import digest
 
 
 def write_checkpoint(tmp_path, run, source, *, generation=1, phase="ready", pending=None, files=None):

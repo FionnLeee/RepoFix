@@ -15,7 +15,7 @@ import json
 import os
 import re
 
-from repopilot.model_policy import request_options
+from repofix.model_policy import request_options
 
 SEVERITIES = ("blocking", "major", "minor")
 BLOCKING_SEVERITIES = ("blocking",)

@@ -10,8 +10,8 @@ when the previous worker died are discarded rather than half-applied.
 import os
 from pathlib import Path
 
-from repopilot.checkpoint import checksum, load_registered
-from repopilot.repository import digest, validate_files
+from repofix.checkpoint import checksum, load_registered
+from repofix.repository import digest, validate_files
 
 PRE_AGENT_KEYS = ("run_id", "task_sha256", "spec_sha256", "source_sha256", "mode", "context_mode", "memory_enabled")
 

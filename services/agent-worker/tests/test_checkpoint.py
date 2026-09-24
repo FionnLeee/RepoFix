@@ -6,7 +6,7 @@ import uuid
 
 import pytest
 from minisweagent.models.test_models import DeterministicModel, make_output
-from repopilot.checkpoint import (
+from repofix.checkpoint import (
     AgentState,
     Checkpoint,
     CheckpointStore,
@@ -15,9 +15,9 @@ from repopilot.checkpoint import (
     checksum,
     load_registered,
 )
-from repopilot.repository import digest
-from repopilot.repository_runtime import read_tree
-from repopilot.runtime import ApprovalPaused, Sandbox, TracedAgent
+from repofix.repository import digest
+from repofix.repository_runtime import read_tree
+from repofix.runtime import ApprovalPaused, Sandbox, TracedAgent
 
 
 class BoundaryPause(BaseException):
@@ -144,7 +144,7 @@ def test_atomic_write_failure_keeps_previous_checkpoint_reference(tmp_path, monk
     def fail_replace(*_):
         raise OSError("Simulated disk publication failure")
 
-    monkeypatch.setattr("repopilot.checkpoint.os.replace", fail_replace)
+    monkeypatch.setattr("repofix.checkpoint.os.replace", fail_replace)
     with pytest.raises(OSError):
         atomic_json(target, {"id": "new"})
     assert json.loads(target.read_text()) == {"id": "previous"}

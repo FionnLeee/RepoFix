@@ -4,10 +4,10 @@ from types import SimpleNamespace
 import pytest
 from minisweagent.exceptions import LimitsExceeded
 from minisweagent.models.test_models import DeterministicModel, make_output
-from repopilot import review
-from repopilot.quota import QuotaUnavailable
-from repopilot.repository_runtime import review_before_acceptance
-from repopilot.runtime import Cancelled, TracedAgent
+from repofix import review
+from repofix.quota import QuotaUnavailable
+from repofix.repository_runtime import review_before_acceptance
+from repofix.runtime import Cancelled, TracedAgent
 
 
 class Quota:
@@ -79,9 +79,9 @@ def test_redis_failure_does_not_remove_the_limit(tmp_path):
 
 def test_official_flash_route_is_explicit_and_disables_thinking(monkeypatch):
     import litellm
-    from repopilot.model_policy import require_authorized_model
-    from repopilot.review import ModelReviewer
-    from repopilot.runtime import SafeModel
+    from repofix.model_policy import require_authorized_model
+    from repofix.review import ModelReviewer
+    from repofix.runtime import SafeModel
 
     monkeypatch.setenv("MODEL_POLICY", "official-deepseek")
     calls = []
@@ -109,7 +109,7 @@ def test_official_flash_route_is_explicit_and_disables_thinking(monkeypatch):
 
 
 def test_unknown_model_policy_rejects_before_provider(monkeypatch):
-    from repopilot.model_policy import require_authorized_model
+    from repofix.model_policy import require_authorized_model
 
     monkeypatch.setenv("MODEL_POLICY", "typo-policy")
     with pytest.raises(ValueError, match="Unknown model policy"):
@@ -308,7 +308,7 @@ def test_failed_revision_keeps_findings_and_coder_reply_in_failure_result(tmp_pa
     import json
     import uuid
 
-    from repopilot.reporting import failure_result
+    from repofix.reporting import failure_result
 
     run = {"id": str(uuid.uuid4()), "mode": "demo", "task": "fix"}
     monkeypatch.setenv("ARTIFACT_ROOT", str(tmp_path))

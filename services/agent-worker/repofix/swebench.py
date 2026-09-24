@@ -1,6 +1,6 @@
-"""Translate between SWE-bench instances and RepoPilot runs, without judging either side.
+"""Translate between SWE-bench instances and RepoFix runs, without judging either side.
 
-RepoPilot decides whether a candidate passes *its* pinned acceptance tests; the official
+RepoFix decides whether a candidate passes *its* pinned acceptance tests; the official
 harness applies an instance's own test patch in the official image and decides FAIL_TO_PASS
 and PASS_TO_PASS. The two answers are not interchangeable, so this module only translates:
 an instance becomes a repository task, a finished run becomes a prediction the harness can
@@ -52,7 +52,7 @@ def task_from_instance(instance, allowed_paths=None, subdir="", context_mode="fu
     """A repository task for one instance, judged by the official harness.
 
     The default workspace mode is ``image``: an instance image already carries its checkout and
-    its pinned environment, and RepoPilot's bounded snapshot (200 text files, 100 KB each) does
+    its pinned environment, and RepoFix's bounded snapshot (200 text files, 100 KB each) does
     not fit a real repository. Image tasks have no path hints by default; snapshot tasks need
     explicit allowed_paths independent of the gold patch. Hidden test identities are not sent.
     """
@@ -119,7 +119,7 @@ def export_predictions(runs, model_name):
     return rows, skipped
 
 
-def batch_predictions(run_ids, fetch, model_name="repopilot"):
+def batch_predictions(run_ids, fetch, model_name="repofix"):
     """Export only explicitly selected attempts, never the paginated global run list."""
     runs, manifest = [], []
     for instance_id, run_id in run_ids.items():

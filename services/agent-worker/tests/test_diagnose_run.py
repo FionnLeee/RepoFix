@@ -2,9 +2,9 @@ import base64
 import json
 import uuid
 
-from repopilot.checkpoint import AgentState, Checkpoint, checksum
-from repopilot.diagnostics import diagnose
-from repopilot.repository import digest
+from repofix.checkpoint import AgentState, Checkpoint, checksum
+from repofix.diagnostics import diagnose
+from repofix.repository import digest
 
 
 def test_cancelled_run_without_checkpoint_has_no_candidate(tmp_path):

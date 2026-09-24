@@ -1,21 +1,21 @@
-name: repopilot
+name: repofix
 services:
   postgres:
     image: postgres:16
     environment:
-      POSTGRES_USER: repopilot
+      POSTGRES_USER: repofix
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?run configure first}
-      POSTGRES_DB: repopilot
+      POSTGRES_DB: repofix
     volumes: ["pgdata:/var/lib/postgresql/data"]
     healthcheck:
-      test: [CMD-SHELL, "pg_isready -U repopilot"]
+      test: [CMD-SHELL, "pg_isready -U repofix"]
       interval: 3s
       timeout: 3s
       retries: 30
   rabbitmq:
     image: rabbitmq:4.1-alpine
     environment:
-      RABBITMQ_DEFAULT_USER: repopilot
+      RABBITMQ_DEFAULT_USER: repofix
       RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:?run configure first}
     volumes: ["rabbitdata:/var/lib/rabbitmq"]
     healthcheck:
@@ -40,8 +40,8 @@ services:
       dockerfile: infra/node.Dockerfile
       target: api
     environment:
-      DATABASE_URL: postgresql://repopilot:${POSTGRES_PASSWORD}@postgres:5432/repopilot
-      AMQP_URL: amqp://repopilot:${RABBITMQ_PASSWORD}@rabbitmq:5672
+      DATABASE_URL: postgresql://repofix:${POSTGRES_PASSWORD}@postgres:5432/repofix
+      AMQP_URL: amqp://repofix:${RABBITMQ_PASSWORD}@rabbitmq:5672
       WORKER_TOKEN: ${WORKER_TOKEN}
       LIVE_ENABLED: ${LIVE_ENABLED:-false}
       BASELINE_CATALOG: /baseline/catalog.json
@@ -82,7 +82,7 @@ services:
       context: .
       dockerfile: infra/worker.Dockerfile
     environment:
-      AMQP_URL: amqp://repopilot:${RABBITMQ_PASSWORD}@rabbitmq:5672
+      AMQP_URL: amqp://repofix:${RABBITMQ_PASSWORD}@rabbitmq:5672
       CONTROL_API_URL: http://api:3101
       WORKER_TOKEN: ${WORKER_TOKEN}
       MODEL_NAME: ${MODEL_NAME:-}
@@ -96,7 +96,7 @@ services:
       REDIS_URL: redis://redis:6379/0
       MODEL_MAX_CONCURRENCY: ${MODEL_MAX_CONCURRENCY:-2}
       OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4318
-      OTEL_SERVICE_NAME: repopilot-worker
+      OTEL_SERVICE_NAME: repofix-worker
       EMBEDDING_MODEL_DIR: /embedding-model
       CONTEXT_WINDOW_TOKENS: ${CONTEXT_WINDOW_TOKENS:-16384}
       CONTEXT_OUTPUT_TOKENS: ${CONTEXT_OUTPUT_TOKENS:-1600}

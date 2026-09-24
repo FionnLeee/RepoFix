@@ -31,7 +31,7 @@ class QuotaTimeout(RuntimeError):
 
 
 class ModelQuota:
-    def __init__(self, client, limit, key="repopilot:model-slots", ttl=120, poll=0.25):
+    def __init__(self, client, limit, key="repofix:model-slots", ttl=120, poll=0.25):
         self.client, self.limit, self.key, self.ttl, self.poll = client, limit, key, ttl, poll
         self.token = None
         self._script = None

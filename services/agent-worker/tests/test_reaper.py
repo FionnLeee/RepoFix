@@ -1,4 +1,4 @@
-from repopilot.reaper import reap
+from repofix.reaper import reap
 
 
 class FakeContainer:
@@ -17,13 +17,13 @@ class FakeDocker:
         self._containers, self.containers = containers, self
 
     def list(self, all=False, filters=None):
-        assert all is True and filters == {"label": "repopilot.managed=sandbox"}
+        assert all is True and filters == {"label": "repofix.managed=sandbox"}
         return self._containers
 
 
 def container(id, run, age, now=1000.0, fail=False):
-    return FakeContainer(id, {"repopilot.managed": "sandbox", "repopilot.run": run,
-                              "repopilot.created": str(now - age)}, fail)
+    return FakeContainer(id, {"repofix.managed": "sandbox", "repofix.run": run,
+                              "repofix.created": str(now - age)}, fail)
 
 
 def test_reaper_removes_only_old_orphaned_sandboxes():
@@ -37,7 +37,7 @@ def test_reaper_removes_only_old_orphaned_sandboxes():
 
 
 def test_reaper_keeps_unlabelled_age_and_reports_failures():
-    unlabelled = FakeContainer("unlabelled", {"repopilot.managed": "sandbox"})
+    unlabelled = FakeContainer("unlabelled", {"repofix.managed": "sandbox"})
     failing = container("failing", "gone", age=500, fail=True)
     result = reap(FakeDocker([unlabelled, failing]), set(), min_age=120, now=1000.0)
     assert [item["container"] for item in result["failed"]] == ["failing"]

@@ -8,10 +8,10 @@ import httpx
 import pytest
 from minisweagent.models.test_models import DeterministicModel, make_output
 from qdrant_client import QdrantClient
-from repopilot.context import ContextConfig, ContextManager, project_rules, tokens
-from repopilot.indexing import CodeIndex, chunks, content_hash
-from repopilot.repository import digest
-from repopilot.runtime import Sandbox, TracedAgent
+from repofix.context import ContextConfig, ContextManager, project_rules, tokens
+from repofix.indexing import CodeIndex, chunks, content_hash
+from repofix.repository import digest
+from repofix.runtime import Sandbox, TracedAgent
 
 
 class Encoder:
@@ -37,7 +37,7 @@ class Registry:
             key = (scope, body["snapshotHash"], body["manifestHash"])
             if key in self.published:
                 return {**self.published[key], "reused": True}
-            build = {**body, "head": {"scope": scope}, "collection": "repopilot_" + Encoder.version[:24], "key": key}
+            build = {**body, "head": {"scope": scope}, "collection": "repofix_" + Encoder.version[:24], "key": key}
             self.builds[body["id"]] = build
             return build
         build = self.builds[body["id"]]
@@ -194,10 +194,10 @@ def test_full_tool_log_can_be_reread_without_host_path_access(tmp_path, monkeypa
         result = sandbox.execute({"command": "python -c \"print('x'*22000 + 'FINAL_SENTINEL')\""})
         assert "FINAL_SENTINEL" not in result["output"]
         log_id = next(sandbox.log_folder.iterdir()).stem
-        read = sandbox.execute({"command": f"repopilot_read_log {log_id} 18000"})
+        read = sandbox.execute({"command": f"repofix_read_log {log_id} 18000"})
         assert "FINAL_SENTINEL" in read["output"]
         with pytest.raises(ValueError):
-            sandbox.execute({"command": "repopilot_read_log ../credentials 0"})
+            sandbox.execute({"command": "repofix_read_log ../credentials 0"})
     finally:
         sandbox.close()
 

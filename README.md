@@ -21,7 +21,7 @@
 
 `scripts/interview_metrics.py` 只读取冻结的 Mini 逐次 CSV、逐题 manifest 与归档 `result.json`，核对 run ID、patch hash、官方判定和首轮分母；另核对 Aider 34 与上下文 27 次。输出含 schema version 和输入 SHA-256 的派生 JSON，不会运行模型或改写原始评测。运行时显式传入 `--mini-csv`、`--artifact-root`、`--aider-runs`、`--context-report` 和 `--output`；原始 CSV 与运行工件在本地 `runtime/` 及面试材料目录中，Git 仓库不包含它们。
 
-**命名说明：** 项目展示名与仓库名由 RepoPilot 改为 RepoFix。已有 Python `repopilot` 模块、Compose 项目名、RabbitMQ 队列、数据库用户及持久化标签继续沿用原内部标识，避免使既有运行记录、检查点和本机数据失效。历史评测保留运行时的原名称与镜像哈希，不追改证据。
+**命名说明：** 当前源码包、Compose 项目、RabbitMQ 队列、数据库账户和新建沙箱标签统一使用 `RepoFix` / `repofix`。旧版运行记录、评测工件、检查点及镜像哈希保留创建时的原值，不追改历史证据。现有数据库和检索数据通过一次性迁移沿用，历史任务仍可查询。
 
 ## 历史审查与修正（2026-09-19）
 
@@ -112,7 +112,7 @@ uv run python scripts/evaluate_baselines.py --live
 # 可选重复实验；会增加模型调用消耗
 uv run python scripts/evaluate_baselines.py --live --repeats 3
 # 不调用模型，使用归档源码、测试、镜像 ID 和 patch 重新验收
-docker compose exec -T worker python -m repopilot.replay <run-id>
+docker compose exec -T worker python -m repofix.replay <run-id>
 # 从完整轨迹恢复旧报告漏记的用量，另存报告，不调用模型或修改原报告
 uv run python scripts/evaluate_baselines.py --recover-report runtime/validation/<report>.json
 ```
@@ -125,7 +125,7 @@ Worker 在任务开始、工具结果完整返回和执行结束的安全边界�
 
 ```bash
 # 将最新已登记 checkpoint 还原到一次性新沙箱，核对内容后销毁，不调用模型
-docker compose exec -T worker python -m repopilot.checkpoint <run-id> --generation 1
+docker compose exec -T worker python -m repofix.checkpoint <run-id> --generation 1
 # 也可用 --checkpoint-id <id> 校验指定历史快照
 ```
 
@@ -147,7 +147,7 @@ docker compose up -d --build --scale worker=2
 `qdrant/bge-small-en-v1.5-onnx-q`（revision `52398278…`）通过 manifest 校验后只读挂载给 Worker；Qdrant 随默认 Compose 启动，仅监听本机端口。
 
 - **代码索引与版本**：源码按 AST 函数／类边界和行数切片，向量写入 Qdrant，payload 绑定项目、commit、索引 ID、embedding 版本和文件哈希。控制端记录每个索引头的待完成与已发布构建；只有 Worker 声明的全部点都已写入且清单一致时才发布，不完整、过期或代次不匹配的构建返回 409。检索只查询已发布索引，命中还必须与当前工作区的片段哈希一致才会被采纳，被修改或删除的文件片段立即失效；执行期间的修改进入本任务独立的覆盖层索引。Qdrant 或 embedding 不可用时退回当前文件的字面检索并记录 `INDEX_FALLBACK`，所有权错误则中止任务。
-- **预算与压缩**：按 UTF-8 字节作为 token 上界估算（`CONTEXT_WINDOW_TOKENS` 默认 16,384，另预留输出 1,600、协议 512、安全 1,024）。超过输入预算 65% 或在页面点击“请求下一步骤压缩”时，生成确定性的结构化摘要（目标、约束、最近决策、已改文件、最近一次测试摘录、未解决项、证据引用），只保留最近的完整动作组，不调用模型生成摘要。仍然超限时依次丢弃证据片段、更早历史和记忆；任务、规则和最近一组动作不可丢弃，超限则报错而不是静默截断。工具输出完整归档，模型可用 `repopilot_read_log <id> <offset>` 回读。事件 `CONTEXT_ASSEMBLED` 记录估算值与来源，`CONTEXT_USAGE` 记录 provider 实际输入 token 的差值。
+- **预算与压缩**：按 UTF-8 字节作为 token 上界估算（`CONTEXT_WINDOW_TOKENS` 默认 16,384，另预留输出 1,600、协议 512、安全 1,024）。超过输入预算 65% 或在页面点击“请求下一步骤压缩”时，生成确定性的结构化摘要（目标、约束、最近决策、已改文件、最近一次测试摘录、未解决项、证据引用），只保留最近的完整动作组，不调用模型生成摘要。仍然超限时依次丢弃证据片段、更早历史和记忆；任务、规则和最近一组动作不可丢弃，超限则报错而不是静默截断。工具输出完整归档，模型可用 `repofix_read_log <id> <offset>` 回读。事件 `CONTEXT_ASSEMBLED` 记录估算值与来源，`CONTEXT_USAGE` 记录 provider 实际输入 token 的差值。
 - **项目规则**：`AGENTS.md` 作用域按目录嵌套，子目录规则只在其范围内覆盖父级；提示中明确规则低于平台策略和用户任务。
 - **显式记忆**：仅通过页面或 `POST /projects/<id>/memories` 显式保存，必须引用来源任务和事件；带乐观版本号，可编辑、停用、启用、删除、导出与导入 Markdown。记忆绑定保存时的 commit，commit 变化后标记“待复核”，需用新任务重新确认；创建任务时可关闭记忆读取。Worker 每次调用都从控制端重新读取有效记忆，控制端不可用时不使用缓存；提示中声明记忆和检索结果是证据而非权限。
 - **Checkpoint**：managed 模式的压缩状态与上下文配置纳入 checkpoint 绑定，恢复后沿用同一摘要状态。
@@ -164,7 +164,7 @@ managed 工具输出绑定执行后的工作区哈希；后续文件变化时，
 - **跨代次恢复**：重新认领会得到新的执行代次，新代次用检查点里的工作区重建沙箱，校验任务、来源、镜像、Agent 配置与工作区摘要后从同一安全边界继续，已消耗的模型调用、工具调用与计时一并继承。被中断步骤在沙箱内的副作用随容器丢弃，原尝试轨迹另存为 `runtime/artifacts/<run-id>/trajectory-before-recovery-g<N>.json`。
 - **版本绑定审批**：动作审批策略为 `auto`（默认，写入允许范围之外的位置时需批准）或 `strict`（所有文件写入都需批准）。命中时 Worker 在安全边界保存检查点并登记审批，任务进入“等待审批”；批准只对该动作与当时的工作区版本有效，恢复时再次核对动作哈希与工作区版本，拒绝则把决定作为观察交回模型。页面提供批准／拒绝按钮。
 - **共享模型并发配额**：Redis 令牌槽限制所有 Worker 合计的并发模型调用数（`MODEL_MAX_CONCURRENCY`，默认 2），槽位带 TTL，Worker 崩溃不会永久占用；Redis 不可用时记录 `QUOTA_UNAVAILABLE` 并拒绝新增模型请求（fail-closed），不解除跨 Worker 上限；image 模式的 Coder 与 Reviewer 都走同一入口，请求前检查取消与调用次数／时间／费用预算。
-- **孤儿沙箱回收**：Worker 周期扫描带 `repopilot.managed=sandbox` 标签的容器，只清理不属于活跃运行且超过 90 秒宽限的容器；控制端不可达时不做任何删除。
+- **孤儿沙箱回收**：Worker 周期扫描带 `repofix.managed=sandbox` 标签的容器，只清理不属于活跃运行且超过 90 秒宽限的容器；控制端不可达时不做任何删除。
 - **broker 断线重连**：控制端发布 Outbox 失败时重建连接，未发布的行保留到下个周期重发。
 
 确定性验证（无生成模型调用）：`scripts/approval_smoke.py` 在 `strict` 策略下暂停、批准、跨代次恢复并完成验收；`scripts/recovery_check.py` 注入租约过期，验证重排队、从登记检查点恢复、旧尝试不留状态与无主沙箱被回收；`scripts/quota_check.py` 在真实 Redis 上验证峰值并发等于上限、等待者串行与槽位回收。Linux Worker 镜像 48 项 pytest、协议检查 16 项、ruff、构建与页面检查通过。这些是功能与故障检查，不是效果评测。交付流程的控制端协议（30 项协议检查中的 6 项）与端到端冒烟见「交付到目标仓库」。
@@ -224,13 +224,13 @@ SWE-bench 的接线（实例 → 任务、运行 → 官方预测文件、官方
 
 ### image 工作区恢复与工件
 
-image 任务先将一次性容器中的仓库还原到指定 `base_commit`，再让 Agent 读取；官方镜像里的额外准备提交不会充当任务基线。检查点绑定不可变镜像 ID、base commit、任务与 Agent 配置，保存二进制 Git 差异及会话、调用次数和已用时间。跨代次恢复重新创建沙箱、重放差异、核对哈希，再继承预算继续。`python -m repopilot.checkpoint <run-id>` 同样支持 image 模式的只读还原检查。
+image 任务先将一次性容器中的仓库还原到指定 `base_commit`，再让 Agent 读取；官方镜像里的额外准备提交不会充当任务基线。检查点绑定不可变镜像 ID、base commit、任务与 Agent 配置，保存二进制 Git 差异及会话、调用次数和已用时间。跨代次恢复重新创建沙箱、重放差异、核对哈希，再继承预算继续。`python -m repofix.checkpoint <run-id>` 同样支持 image 模式的只读还原检查。
 
 恢复范围是 Git 跟踪与未忽略的仓库文件；忽略的缓存、依赖安装、进程、容器其他目录和 `/tmp` 不在范围内。仍强制 full context，不启用 shell 动作审批。差异超出检查点的 4 MiB 编码快照上限或工作区有后台进程时拒绝保存，不静默截断。
 
 产出候选后保存全部变更文件的 `file-changes.json`、内容寻址的 base/candidate 原始 `blobs/`、完整二进制 `candidate.patch`，以及 UTF-8 预览 `source.json` / `candidate.json`。支持新增、删除、大文件、二进制文件与超过 60 个变更文件；基线仓库其余内容由固定镜像和 commit 标识。网页仍有显示上限，省略项单独计数，完整 blob 不因预览限制丢弃。候选差异页可逐文件下载基准与候选原始内容；API 只返回本次运行清单列出的 blob，并在下载时校验字节数与 SHA-256。
 
-模型请求前按 `MODEL_POLICY` 校验路由，规则见 `services/agent-worker/repopilot/model_policy.py`。`free-quota` 只接受用户列出的 9 个免费名称；`official-deepseek` 只接受官方 `https://api.deepseek.com` 的 `deepseek-flash`，按官方价格计费。官方路由明确关闭思考模式，Coder 与 Reviewer 均不自动重试或切换模型。切换路由需在本机 `.env` 设置 `MODEL_POLICY`、`MODEL_NAME`、`MODEL_BASE_URL`、`MODEL_API_KEY` 并重建 Worker；配置本身不会启动模型评测。
+模型请求前按 `MODEL_POLICY` 校验路由，规则见 `services/agent-worker/repofix/model_policy.py`。`free-quota` 只接受用户列出的 9 个免费名称；`official-deepseek` 只接受官方 `https://api.deepseek.com` 的 `deepseek-flash`，按官方价格计费。官方路由明确关闭思考模式，Coder 与 Reviewer 均不自动重试或切换模型。切换路由需在本机 `.env` 设置 `MODEL_POLICY`、`MODEL_NAME`、`MODEL_BASE_URL`、`MODEL_API_KEY` 并重建 Worker；配置本身不会启动模型评测。
 
 ### 2026-09-22 冻结小样本
 

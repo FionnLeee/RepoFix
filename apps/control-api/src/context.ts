@@ -100,7 +100,7 @@ export class ContextService {
       }
       const build = await tx.indexBuild.create({ data: { id: body.id, headId, runId: id,
         workerId: body.workerId, generation: body.generation, snapshotHash: body.snapshotHash,
-        collection: `repopilot_${body.embedding.slice(0, 24)}`, pointIds: body.pointIds, manifestHash: body.manifestHash } });
+        collection: `repofix_${body.embedding.slice(0, 24)}`, pointIds: body.pointIds, manifestHash: body.manifestHash } });
       await tx.indexHead.update({ where: { id: headId }, data: { pendingId: build.id } });
       return { ...build, head };
     });

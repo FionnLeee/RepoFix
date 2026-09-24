@@ -5,8 +5,8 @@ import subprocess
 from pathlib import Path
 
 import pytest
-from repopilot import delivery
-from repopilot.delivery import Checkout, DeliveryError, deliver, fingerprint, patch_files, repo_paths, survey
+from repofix import delivery
+from repofix.delivery import Checkout, DeliveryError, deliver, fingerprint, patch_files, repo_paths, survey
 
 ENV = {**os.environ, "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull,
        "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@example.invalid",

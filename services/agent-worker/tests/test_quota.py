@@ -1,7 +1,7 @@
 import time
 
 import pytest
-from repopilot.quota import ModelQuota, QuotaTimeout, QuotaUnavailable
+from repofix.quota import ModelQuota, QuotaTimeout, QuotaUnavailable
 
 
 class FakeRedis:
@@ -83,4 +83,4 @@ def test_configuration_requires_url_and_positive_limit():
     assert ModelQuota.from_env({"REDIS_URL": "redis://redis:6379/0", "MODEL_MAX_CONCURRENCY": "0"}) is None
     assert ModelQuota.from_env({"REDIS_URL": "redis://redis:6379/0", "MODEL_MAX_CONCURRENCY": "nope"}) is None
     quota = ModelQuota.from_env({"REDIS_URL": "redis://redis:6379/0", "MODEL_MAX_CONCURRENCY": "2"})
-    assert quota.limit == 2 and quota.key == "repopilot:model-slots"
+    assert quota.limit == 2 and quota.key == "repofix:model-slots"

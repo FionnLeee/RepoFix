@@ -6,14 +6,14 @@ import uuid
 import docker
 import pytest
 from minisweagent.models.test_models import DeterministicModel, make_output
-from repopilot import image_workspace, recovery
-from repopilot.runtime import Sandbox, TracedAgent
+from repofix import image_workspace, recovery
+from repofix.runtime import Sandbox, TracedAgent
 
 
 @pytest.fixture
 def image(tmp_path):
     (tmp_path / "Dockerfile").write_text(
-        "FROM repopilot-worker:latest\nWORKDIR /testbed\n"
+        "FROM repofix-worker:latest\nWORKDIR /testbed\n"
         "RUN git init -q && printf 'old\\n' > old.py && printf 'gone\\n' > gone.py && "
         "git add . && git -c user.name=test -c user.email=test@example.invalid commit -qm base\n")
     client = docker.from_env()
@@ -94,8 +94,8 @@ def test_image_artifacts_keep_more_than_sixty_files_and_large_text(image, tmp_pa
 def test_paid_models_rejected_before_network(monkeypatch):
     monkeypatch.setenv("MODEL_POLICY", "free-quota")
     import litellm
-    from repopilot.model_policy import FREE_MODELS, require_free_model
-    from repopilot.review import ModelReviewer
+    from repofix.model_policy import FREE_MODELS, require_free_model
+    from repofix.review import ModelReviewer
     monkeypatch.setattr(litellm, "completion", lambda **_: pytest.fail("network must not be reached"))
     for name in FREE_MODELS:
         assert require_free_model(name) == name
@@ -122,8 +122,8 @@ def test_prepared_image_is_reset_to_dataset_base_before_agent_reads(image):
 def test_image_revision_recovery_preserves_review_ledger_and_shared_budget(image, tmp_path, monkeypatch):
     from types import SimpleNamespace
 
-    from repopilot import review
-    from repopilot.repository_runtime import review_before_acceptance
+    from repofix import review
+    from repofix.repository_runtime import review_before_acceptance
 
     monkeypatch.setenv("ARTIFACT_ROOT", str(tmp_path))
     run = {"id": str(uuid.uuid4()), "generation": 1, "task": "fix", "mode": "demo", "reviewBudget": "shared"}

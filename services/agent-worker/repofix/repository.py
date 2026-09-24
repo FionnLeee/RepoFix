@@ -119,7 +119,7 @@ class RepositoryTask(BaseModel):
     def paths_shape(cls, values):
         for value in values:
             safe_path(value)
-            if value.startswith("_repopilot_verify/"):
+            if value.startswith("_repofix_verify/"):
                 raise ValueError("Verification paths cannot be candidate paths")
         if len(set(values)) != len(values):
             raise ValueError("Duplicate candidate path")
@@ -175,6 +175,6 @@ def load_snapshot(spec: RepositoryTask) -> dict[str, str]:
                     raise ValueError("Too many files in selected subtree")
     prefix = spec.subdir + "/" if spec.subdir else ""
     selected = {name[len(prefix):]: value for name, value in files.items() if name.startswith(prefix)}
-    if any(name.startswith("_repopilot_verify/") for name in selected):
+    if any(name.startswith("_repofix_verify/") for name in selected):
         raise ValueError("Repository uses a reserved verification directory")
     return validate_files(selected)

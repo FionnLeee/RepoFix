@@ -8,8 +8,8 @@ import threading
 import uuid
 from pathlib import Path
 
-from repopilot.repository import RepositoryTask, digest
-from repopilot.repository_runtime import replay_patch, verify
+from repofix.repository import RepositoryTask, digest
+from repofix.repository_runtime import replay_patch, verify
 
 
 def replay(run_id):

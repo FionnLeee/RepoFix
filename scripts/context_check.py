@@ -6,8 +6,8 @@ import uuid
 from pathlib import Path
 
 import httpx
-from repopilot.indexing import CodeIndex, ControlContext, content_hash
-from repopilot.repository import RepositoryTask, load_snapshot
+from repofix.indexing import CodeIndex, ControlContext, content_hash
+from repofix.repository import RepositoryTask, load_snapshot
 
 base = os.getenv("CONTROL_API_URL", "http://localhost:3101")
 headers = {"authorization": f"Bearer {os.environ['WORKER_TOKEN']}"}

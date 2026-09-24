@@ -14,8 +14,8 @@ from pathlib import Path
 
 import swebench as cli
 import swebench_subset as subset
-from repopilot import swebench
-from repopilot.model_policy import require_authorized_model
+from repofix import swebench
+from repofix.model_policy import require_authorized_model
 
 
 def sha(value):

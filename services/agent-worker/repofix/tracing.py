@@ -29,7 +29,7 @@ def provider():
             from opentelemetry.sdk.trace.export import BatchSpanProcessor
 
             _provider = TracerProvider(resource=Resource.create(
-                {"service.name": os.getenv("OTEL_SERVICE_NAME", "repopilot-worker")}))
+                {"service.name": os.getenv("OTEL_SERVICE_NAME", "repofix-worker")}))
             endpoint = os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT", "").rstrip("/")
             # The endpoint is configured as a base URL; the signal path is part of the HTTP protocol.
             traces = endpoint if endpoint.endswith("/v1/traces") else endpoint + "/v1/traces"
@@ -47,7 +47,7 @@ class Tracing:
     def __init__(self, run_id, traceparent=None):
         self.run_id = run_id
         self.provider = provider()
-        self.tracer = self.provider.get_tracer("repopilot") if self.provider else None
+        self.tracer = self.provider.get_tracer("repofix") if self.provider else None
         self.parent = self._extract(traceparent)
         # Read the handed-over span now: opening the attempt span consumes the parent context.
         self._parent_span_id = self._span_id_of(self.parent)
