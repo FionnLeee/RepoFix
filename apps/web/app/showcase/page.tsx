@@ -166,7 +166,7 @@ export default function ShowcasePage() {
               <div className={styles.guideItem}><span>01</span><p><strong>执行轨迹</strong>：确认任务从队列进入 Worker，并留下检查点与操作记录。</p></div>
               <div className={styles.guideItem}><span>02</span><p><strong>候选补丁</strong>：查看两个文件的实际 diff 与确定性评审意见。</p></div>
               <div className={styles.guideItem}><span>03</span><p><strong>验收结果</strong>：查看原始版本与候选版本在干净环境中的测试结果。</p></div>
-              {launchedId && <a className={styles.activeRun} href={`/?run=${launchedId}`}>
+              {launchedId && <a className={styles.activeRun} href={`/showcase/run/${launchedId}`}>
                 <span><strong>{launched ? statusText[launched.status] || launched.status : "任务已创建"}</strong><small>打开刚创建的运行 {launchedId.slice(0, 8)}</small></span>
                 <ExternalLink size={17} />
               </a>}
@@ -181,7 +181,7 @@ export default function ShowcasePage() {
             <p>默认展示通过独立验收的确定性基线任务；可切换查看最近运行，包括失败与取消。模型评测另见项目报告。</p>
           </div><button className={styles.filterButton} type="button" onClick={() => setShowRecent((value) => !value)} aria-pressed={showRecent}>{showRecent ? "查看验收通过" : "查看最近全部"}</button></div>
           {visibleRuns?.length ? <div className={styles.runGrid}>
-            {visibleRuns.map((run) => <a className={styles.runCard} href={`/?run=${run.id}`} key={run.id}>
+            {visibleRuns.map((run) => <a className={styles.runCard} href={`/showcase/run/${run.id}`} key={run.id}>
               <div className={styles.runTop}><span className={styles.runId}>#{run.id.slice(0, 8)}</span><span className={`${styles.runStatus} ${run.status === "SUCCEEDED" ? styles.passed : ""}`}>{statusText[run.status] || run.status}</span></div>
               <h3>{data?.baselines.find((item) => item.id === run.baselineId)?.title || run.baselineId}</h3>
               <div className={styles.runEvidence}>

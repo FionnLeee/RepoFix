@@ -368,6 +368,59 @@ class Api {
       recentRuns: summarize(recent),
     };
   }
+  @Get("showcase/runs/:id") async showcaseRun(@Param("id") id: string) {
+    const run = await this.db.run.findUnique({ where: { id },
+      include: { events: { orderBy: { id: "asc" }, select: { type: true, createdAt: true } } } });
+    const baseline = catalog().find((item) => item.id === run?.baselineId);
+    if (!run || run.mode !== "demo" || !baseline) throw new NotFoundException();
+    const result = run.result as {
+      patch?: string;
+      changed_files?: string[];
+      verification?: {
+        passed?: boolean | null;
+        patch_replayed?: boolean;
+        baseline?: { output?: string; report?: { tests?: number; failures?: number; errors?: number; skipped?: number } };
+        candidate?: { output?: string; report?: { tests?: number; failures?: number; errors?: number; skipped?: number } };
+      };
+      review?: {
+        rounds?: number;
+        reviews?: { round: number; status: string; summary?: string; findings?: unknown[] }[];
+        dispositions?: { id: number; file: string; line: number; outcome: string }[];
+      };
+    } | null;
+    const milestones = ["QUEUED", "RUNNING", "REPOSITORY_READY", "REVIEW_REQUESTED",
+      "REVIEW_COMPLETED", "CANDIDATE", "SUCCEEDED", "FAILED", "CANCELLED", "INTERRUPTED"];
+    const seen = new Set<string>();
+    return {
+      kind: "deterministic-demo-run",
+      id: run.id, baselineId: baseline.id, title: baseline.title, task: run.task,
+      status: run.status, createdAt: run.createdAt, updatedAt: run.updatedAt,
+      commit: baseline.spec.commit,
+      allowedPaths: baseline.spec.allowedPaths,
+      workerId: run.workerId,
+      milestones: run.events.filter((event) => {
+        if (!milestones.includes(event.type) || seen.has(event.type)) return false;
+        seen.add(event.type);
+        return true;
+      }).map(({ type, createdAt }) => ({ type, createdAt })),
+      patch: result?.patch?.slice(0, 30000) || "",
+      patchTruncated: (result?.patch?.length ?? 0) > 30000,
+      changedFiles: result?.changed_files ?? [],
+      review: {
+        rounds: result?.review?.rounds ?? 0,
+        roundsDetail: result?.review?.reviews?.map(({ round, status, summary, findings }) =>
+          ({ round, status, summary, findings: findings?.length ?? 0 })) ?? [],
+        dispositions: result?.review?.dispositions?.map(({ id, file, line, outcome }) =>
+          ({ id, file, line, outcome })) ?? [],
+      },
+      verification: {
+        passed: result?.verification?.passed ?? null,
+        patchReplayed: result?.verification?.patch_replayed ?? false,
+        baseline: result?.verification?.baseline ?? null,
+        candidate: result?.verification?.candidate ?? null,
+      },
+    };
+  }
   @Get("projects") projects() {
     return this.db.project.findMany({ where: { owner: "local" }, orderBy: { createdAt: "desc" } });
   }

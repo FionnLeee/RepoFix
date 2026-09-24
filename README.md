@@ -44,7 +44,7 @@ docker compose up -d --build --scale worker=2
 
 页面：http://localhost:3100 。API：http://localhost:3101/health 。配置文件 `.env` 不提交。
 
-面试演示页：http://localhost:3100/showcase 。选择三个内置跨文件任务之一，可启动不访问收费模型的确定性执行，再从实际运行记录进入工作台查看队列轨迹、多文件补丁和独立验收。页面默认展示通过验收的演示记录，也能切换查看最近失败或取消的记录；明确标注预设 Coder/Reviewer 与真实模型评测的边界。`GET /showcase` 只返回本机数据库里的演示任务摘要，不混入 SWE-bench 运行。
+面试演示页：http://localhost:3100/showcase 。选择三个内置跨文件任务之一，可启动不访问收费模型的确定性执行。点击运行记录进入聚焦证据页，对照固定源码、关键执行事件、候选 diff、确定性评审意见，以及原始版本和候选版本的独立测试；也可进入完整工作台查看工具轨迹。页面默认展示通过验收的演示记录，也能切换查看最近失败或取消的记录；明确标注预设 Coder/Reviewer 与真实模型评测的边界。`GET /showcase` 和 `GET /showcase/runs/:id` 只返回本机数据库里的内置演示摘要，不混入 SWE-bench 运行。
 
 授权复用 TicketPilot 的模型时：
 
