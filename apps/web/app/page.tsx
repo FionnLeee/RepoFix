@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import {
   QueryClient,
   QueryClientProvider,
+  useInfiniteQuery,
   useQuery,
   useQueryClient,
 } from "@tanstack/react-query";
@@ -118,6 +119,8 @@ type Run = {
     provenance?: { commit: string; source_sha256: string; image_id: string; context_mode: string };
   };
 };
+type RunSummary = Pick<Run, "id" | "mode" | "status" | "createdAt" | "baselineId" | "projectId">;
+type RunSummaryPage = { items: RunSummary[]; nextCursor: string | null };
 const labels: Record<string, string> = {
   QUEUED: "等待执行",
   RUNNING: "执行中",
@@ -188,6 +191,9 @@ async function api<T>(path: string, body?: unknown): Promise<T> {
 function Workspace() {
   const qc = useQueryClient(),
     [selected, setSelected] = useState<string>(),
+    [runLookup, setRunLookup] = useState(""),
+    [lookupError, setLookupError] = useState(""),
+    [listStatus, setListStatus] = useState(""),
     [tab, setTab] = useState("trace"),
     [error, setError] = useState(""),
     [taskKind, setTaskKind] = useState("checkout"),
@@ -221,17 +227,30 @@ function Workspace() {
     queryFn: () => api<{ liveEnabled: boolean }>("/health"),
     refetchInterval: 10000,
   });
-  const runs = useQuery({
-    queryKey: ["runs"],
-    queryFn: () => api<Run[]>("/runs"),
-    refetchInterval: 3000,
+  const runs = useInfiniteQuery({
+    queryKey: ["run-summaries", listStatus],
+    initialPageParam: "",
+    queryFn: ({ pageParam }) => {
+      const params = new URLSearchParams({ limit: "20" });
+      if (listStatus) params.set("status", listStatus);
+      if (pageParam) params.set("cursor", pageParam);
+      return api<RunSummaryPage>(`/runs/summary?${params}`);
+    },
+    getNextPageParam: page => page.nextCursor || undefined,
+    refetchInterval: 15000,
   });
-  const id = selected || runs.data?.[0]?.id;
+  const summaryRuns = runs.data?.pages.flatMap(page => page.items) ?? [];
+  const id = selected || summaryRuns[0]?.id;
   const detail = useQuery({
     queryKey: ["run", id],
     queryFn: () => api<Run>(`/runs/${id}`),
     enabled: !!id,
-    refetchInterval: 5000,
+    refetchInterval: query => {
+      const item = query.state.data as Run | undefined;
+      return item && (["FAILED", "CANCELLED"].includes(item.status) ||
+        (item.status === "SUCCEEDED" && (!item.result?.verification?.delegated || item.evaluation)))
+        ? false : 15000;
+    },
   });
   const diagnosis = useQuery({
     queryKey: ["run-diagnostic", id],
@@ -245,16 +264,34 @@ function Workspace() {
     enabled: !!id && detail.data?.status === "SUCCEEDED",
     refetchInterval: 5000,
   });
+  const [streamStart, setStreamStart] = useState<{ id: string; after: number }>();
+  const streamNeeded = !!id && detail.data?.id === id &&
+    (!["SUCCEEDED", "FAILED", "CANCELLED"].includes(detail.data.status) ||
+      (detail.data.status === "SUCCEEDED" && !!detail.data.result?.verification?.delegated && !detail.data.evaluation));
   useEffect(() => {
-    if (!id) return;
-    const stream = new EventSource(`/api/runs/${id}/stream`);
-    stream.onmessage = () => {
-      void qc.invalidateQueries({ queryKey: ["run", id] });
-      void qc.invalidateQueries({ queryKey: ["runs"] });
-      void qc.invalidateQueries({ queryKey: ["deliveries", id] });
+    if (id && streamNeeded && detail.data?.id === id && streamStart?.id !== id)
+      setStreamStart({ id, after: detail.data.events.at(-1)?.id ?? 0 });
+  }, [id, detail.data, streamNeeded, streamStart?.id]);
+  useEffect(() => {
+    if (!id || !streamNeeded || streamStart?.id !== id) return;
+    const stream = new EventSource(`/api/runs/${id}/stream?after=${streamStart.after}`);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    stream.onmessage = message => {
+      if (!timer) timer = setTimeout(() => {
+        timer = undefined;
+        void qc.invalidateQueries({ queryKey: ["run", id] });
+      }, 500);
+      try {
+        const event = JSON.parse(message.data) as { type?: string };
+        if (["QUEUED", "RUNNING", "VERIFYING", "WAITING_APPROVAL", "SUCCEEDED",
+          "FAILED", "CANCELLED", "INTERRUPTED", "REQUEUED"].includes(event.type || ""))
+          void qc.invalidateQueries({ queryKey: ["run-summaries"] });
+        if (event.type?.startsWith("DELIVERY_"))
+          void qc.invalidateQueries({ queryKey: ["deliveries", id] });
+      } catch { /* The periodic active-run refresh remains the fallback. */ }
     };
-    return () => stream.close();
-  }, [id, qc]);
+    return () => { stream.close(); if (timer) clearTimeout(timer); };
+  }, [id, qc, streamNeeded, streamStart]);
   async function create(mode: string) {
     setBusy(true);
     setError("");
@@ -272,7 +309,7 @@ function Workspace() {
       });
       setSelected(run.id);
       setTab("trace");
-      await qc.invalidateQueries({ queryKey: ["runs"] });
+      await qc.invalidateQueries({ queryKey: ["run-summaries"] });
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -343,10 +380,40 @@ function Workspace() {
           <Play size={16} /> 面试演示 <ArrowUpRight size={15} />
         </a>
         <div className="rail-label recent-label">
-          最近任务 <span>{runs.data?.length || 0}</span>
+          历史任务 <span>已载入 {summaryRuns.length}</span>
         </div>
+        <form className="run-lookup" onSubmit={event => {
+          event.preventDefault();
+          const candidate = runLookup.trim();
+          if (!/^[0-9a-f-]{36}$/.test(candidate)) {
+            setLookupError("请输入完整的 Run ID");
+            return;
+          }
+          setLookupError("");
+          setSelected(candidate);
+        }}>
+          <input aria-label="按 Run ID 查找" value={runLookup} onChange={event => setRunLookup(event.target.value)} placeholder="粘贴 Run ID" />
+          <button type="submit">打开</button>
+        </form>
+        {lookupError && <small className="run-lookup-error" role="alert">{lookupError}</small>}
+        <select className="run-status-filter" aria-label="按状态筛选历史任务" value={listStatus}
+          onChange={event => setListStatus(event.target.value)}>
+          <option value="">全部状态</option>
+          <option value="SUCCEEDED">执行完成</option>
+          <option value="FAILED">未通过</option>
+          <option value="INTERRUPTED">执行中断</option>
+          <option value="CANCELLED">已取消</option>
+          <option value="RUNNING">执行中</option>
+          <option value="WAITING_APPROVAL">等待审批</option>
+        </select>
         <div className="run-list">
-          {runs.data?.map((r) => (
+          {detail.data && !summaryRuns.some(item => item.id === detail.data.id) && (
+            <button className="run-item selected" onClick={() => setSelected(detail.data.id)}>
+              <span className={`dot ${detail.data.status.toLowerCase()}`} />
+              <span>当前历史任务<small>{detail.data.id.slice(0, 8)} · {labels[detail.data.status] || detail.data.status}</small></span>
+            </button>
+          )}
+          {summaryRuns.map((r) => (
             <button
               key={r.id}
               onClick={() => setSelected(r.id)}
@@ -354,7 +421,7 @@ function Workspace() {
             >
               <span className={`dot ${r.status.toLowerCase()}`} />
               <span>
-                {r.baselineId || (r.spec ? "仓库修复" : "折扣示例")}
+                {r.baselineId || (r.projectId ? "仓库修复" : "折扣示例")}
                 <small>
                   {r.mode === "live" ? "真实模型" : "确定性演示"} ·{" "}
                   {new Date(r.createdAt).toLocaleTimeString("zh-CN", {
@@ -365,6 +432,11 @@ function Workspace() {
               </span>
             </button>
           ))}
+          {runs.hasNextPage && <button className="run-load-more" disabled={runs.isFetchingNextPage}
+            onClick={() => void runs.fetchNextPage()}>
+            {runs.isFetchingNextPage ? "加载中…" : "加载更早任务"}
+          </button>}
+          {!runs.isLoading && !summaryRuns.length && <p className="run-empty">该状态暂无任务</p>}
         </div>
         <div className="rail-bottom">
           <GitBranch size={15} />

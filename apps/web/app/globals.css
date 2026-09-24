@@ -129,6 +129,32 @@ a {
   justify-content: space-between;
   margin-top: 32px;
 }
+.run-lookup { display: flex; gap: 5px; margin-bottom: 7px; }
+.run-lookup input, .run-status-filter {
+  min-width: 0;
+  width: 100%;
+  padding: 7px 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #fff;
+  color: var(--ink);
+  font-size: 11px;
+}
+.run-lookup button, .run-load-more {
+  border: 1px solid #d7e0ef;
+  border-radius: 6px;
+  background: #f4f7fd;
+  color: #315ed8;
+  cursor: pointer;
+  font-size: 11px;
+  white-space: nowrap;
+}
+.run-lookup button { padding: 0 9px; }
+.run-lookup-error { color: #b65753; display: block; font-size: 11px; margin: -3px 0 7px; }
+.run-status-filter { margin-bottom: 5px; }
+.run-load-more { margin: 6px 0; padding: 8px; width: 100%; }
+.run-load-more:disabled { cursor: wait; opacity: .65; }
+.run-empty { color: var(--muted); font-size: 11px; margin: 12px; }
 .run-list {
   overflow-y: auto;
   min-height: 80px;
@@ -844,6 +870,9 @@ footer {
   .rail-label,
   .nav-current,
   .nav-showcase,
+  .run-lookup,
+  .run-lookup-error,
+  .run-status-filter,
   .run-list,
   .rail-bottom {
     display: none;

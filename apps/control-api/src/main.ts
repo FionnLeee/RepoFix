@@ -333,6 +333,46 @@ class Api {
   @Get("runs") list() {
     return this.db.run.findMany({ orderBy: { createdAt: "desc" }, take: 40 });
   }
+  @Get("runs/summary") async runSummaries(
+    @Query("limit") rawLimit?: string,
+    @Query("status") status?: string,
+    @Query("cursor") cursor?: string,
+  ) {
+    const limit = rawLimit === undefined ? 20 : Number(rawLimit);
+    if (!Number.isInteger(limit) || limit < 1 || limit > 50)
+      throw new BadRequestException("limit 必须是 1 到 50 的整数");
+    if (status && !["QUEUED", "RUNNING", "VERIFYING", "WAITING_APPROVAL",
+      ...terminal].includes(status))
+      throw new BadRequestException("未知任务状态");
+    let before: { createdAt: Date; id: string } | null = null;
+    if (cursor) {
+      try {
+        if (cursor.length > 256) throw new Error("cursor too long");
+        const parsed = JSON.parse(Buffer.from(cursor, "base64url").toString("utf8"));
+        if (!Array.isArray(parsed) || parsed.length !== 2 ||
+            typeof parsed[0] !== "string" || typeof parsed[1] !== "string" ||
+            !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(parsed[1]))
+          throw new Error("invalid cursor");
+        const createdAt = new Date(parsed[0]);
+        if (Number.isNaN(createdAt.getTime()) || createdAt.toISOString() !== parsed[0])
+          throw new Error("invalid cursor date");
+        before = { createdAt, id: parsed[1] };
+      } catch { throw new BadRequestException("无效分页游标"); }
+    }
+    const items = await this.db.run.findMany({
+      where: { ...(status ? { status } : {}), ...(before ? { OR: [
+        { createdAt: { lt: before.createdAt } },
+        { createdAt: before.createdAt, id: { lt: before.id } },
+      ] } : {}) },
+      orderBy: [{ createdAt: "desc" }, { id: "desc" }], take: limit + 1,
+      select: { id: true, baselineId: true, projectId: true, mode: true, status: true, createdAt: true },
+    });
+    const page = items.slice(0, limit);
+    const last = page.at(-1);
+    return { items: page, nextCursor: items.length > limit && last
+      ? Buffer.from(JSON.stringify([last.createdAt.toISOString(), last.id])).toString("base64url")
+      : null };
+  }
   @Get("baseline-tasks") baselines() {
     return catalog().map(({ id, title, task, spec }) => ({ id, title, task, spec }));
   }
