@@ -44,6 +44,7 @@ test-results
 playwright-report
 **/*.md
 !README.md
+!README.zh-CN.md
 !vendor/mini-swe-agent/README.md
 **/*.doc
 **/*.docx

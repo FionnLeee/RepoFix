@@ -1,0 +1,316 @@
+# RepoFix
+
+[English](README.md) | 简体中文
+
+面向代码任务的 Agent 工作台，基于固定版本的 [mini-swe-agent](https://github.com/SWE-agent/mini-swe-agent) 扩展。
+
+技术栈：Next.js / TypeScript 工作台、NestJS / Fastify 控制端、Prisma / PostgreSQL、RabbitMQ 和 Python Worker。支持固定 commit 的小型 Python 仓库、多文件补丁与独立验收。
+
+复用 mini-swe-agent 2.4.6（MIT）的 Agent 循环、模型接入与轨迹格式，以 submodule 固定提交 `04d809ceab9df28f9adaed044884180159172930`，保留上游许可证。RepoFix 在外部新增任务管理、跨语言 Worker 协议、Docker 沙箱适配、独立验收和网页工作台。
+
+## 现在能展示什么
+
+一次仓库修复由控制端持久化任务并经 Outbox/RabbitMQ 分发；Worker 在固定 commit 的沙箱中运行 Agent，导出候选补丁。控制端用租约、代次及检查点处理重复消息和中断；候选是否有效由独立验收决定。最终应用到用户 checkout 时，还要人工批准具体补丁与目标文件指纹。Agent 自称完成、验收通过和用户交付是三个不同状态。
+
+面试入口是 [`/showcase`](http://localhost:3100/showcase) 的零模型确定性演示：打开一条任务，看版本、事件、候选 diff 与验收证据。服务未启动时，演示不能作为在线证据。三条主线是**可靠调度、独立验收、版本绑定交付**。Agent 基础循环、模型接入及轨迹格式来自上游；SWE-bench 最终判分来自官方 harness，不是本项目自研评分器。
+
+| 工作区模式 | 适用范围与上下文 | 开发期权限和检查点 | 最终验收 |
+| --- | --- | --- | --- |
+| `snapshot` | 受限文本仓库，可选 full/compact/managed 上下文 | shell 写操作可按策略审批；检查点保存受限文本、会话和预算，不保存进程或环境 | 本项目将候选重放到新沙箱，对基线/候选运行同一组独立测试 |
+| `image` | 固定 commit 的既有仓库镜像，强制 full 上下文 | shell 审批停用；检查点保存仓库 Git delta、会话和预算，不保存完整容器状态 | SWE-bench 任务由官方 harness 评分；本项目先检查补丁产生及来源绑定 |
+
+**冻结结果及口径。** Verified Mini 全 50 个不同 issue 的本地首轮：官方 harness 判定 **33/50 resolved**，其中 30 题调用上限 60、20 题上限 100；另 10 次 Reviewer 开启配对和 10 次旧失败重试不混入首轮分母。最多两次尝试的最好值为 34/50，不是同配置 pass@1 或 Verified 500 榜单。Aider Polyglot Python 34 题适配评测：公开候选测试 33/34，通过平台严格验收 22/34，两者判据不同。三项自建跨文件任务各三次、三种上下文对照：full/compact/managed 各 6/9；短任务里 managed 未带来成功数或 token 优势。所有评测均保留失败和空补丁；不将小样本 Reviewer 差异写成稳定提升。
+
+`scripts/interview_metrics.py` 只读取冻结的 Mini 逐次 CSV、逐题 manifest 与归档 `result.json`，核对 run ID、patch hash、官方判定和首轮分母；另核对 Aider 34 与上下文 27 次。输出含 schema version 和输入 SHA-256 的派生 JSON，不会运行模型或改写原始评测。运行时显式传入 `--mini-csv`、`--artifact-root`、`--aider-runs`、`--context-report` 和 `--output`；原始 CSV 与运行工件在本地 `runtime/` 及面试材料目录中，Git 仓库不包含它们。
+
+**命名说明：** 当前源码包、Compose 项目、RabbitMQ 队列、数据库账户和新建沙箱标签统一使用 `RepoFix` / `repofix`。旧版运行记录、评测工件、检查点及镜像哈希保留创建时的原值，不追改历史证据。现有数据库和检索数据通过一次性迁移沿用，历史任务仍可查询。
+
+## 历史审查与修正（2026-09-19）
+
+当前实现与下方历史实验记录的区别：
+
+- SWE-bench 子集按本批次精确 run ID 导出；历史非空补丁不能替代本轮失败。批次使用唯一目录 `runtime/validation/subset-<uuid>/`，保存 manifest、预测、gold 与官方报告；manifest 保留重试链、全部尝试用量及实例/运行/补丁/配置摘要，未知调用数为 null。单独导出需显式传 `scripts/swebench.py export --run-id <id>`，多个实例重复该参数。
+- 官方验收独立于执行状态。SUCCEEDED 表示执行结束；未验收候选显示“待官方验收”。子集评测结束后按实例、run ID、patch SHA-256 导入结果；不同版本、非终态或冲突结果被拒绝，重复导入幂等。`scripts/swebench_subset.py --publish-batch <manifest.json>` 可重试导入，不调用模型。
+- 新建 image 任务不再从 gold 提取允许路径，也不把 `FAIL_TO_PASS` 注入开发命令。snapshot 适配需要显式 allowedPaths。**历史 3/10 来自旧提示配置，不是新配置成绩**；2026-09-22 新口径五实例配对结果见下方。gold 筛选只说明本机暂可评测性，不能推断其他补丁不可能通过。
+- Coder、Reviewer 和 image 模式共用 Redis 配额及请求前预算检查；Redis 失联拒绝新增模型请求，槽位按到期时间回收。review 计数与轨迹立即持久化。`agent.step` 与 `model.call` 分开计时。
+- 无效评审输出记录失败；意见被丢弃或证据截断时显示“不完整”。开发测试改变候选会使评审证据失效。大文件优先提供 diff hunk 附近代码，删除文件支持 base 侧定位，diff 列表包含新增文件。Reviewer 仍无工具；不能据此宣称已证明评审效果提升。
+- strict 是保守的命令审批：仅少量可确认只读的直接命令免审批，脚本、复合 shell 与不确定命令都需批准。auto 仍只是常见写法提示，不是完整权限模型。最终 patch 应用到用户自己 checkout 的审批见下方「交付到目标仓库」：这是设计里真正需要人工批准的动作，沙箱内编辑不依赖它。
+
+历史记录中关于 Redis fail-open、自动选择历史非空补丁和 gold 派生提示的描述已被以上行为替代。
+
+## 代码归档与版本发布
+
+私有仓库：[FionnLeee/RepoFix](https://github.com/FionnLeee/RepoFix)，默认分支 `main`。克隆时使用 `git clone --recurse-submodules https://github.com/FionnLeee/RepoFix.git` 获取固定版本的上游依赖。
+
+每轮改进通过适用验证后，在主题分支提交并向 `main` 发起 PR；合并后的 `main` 是归档代码基线。通过 `git log --oneline` 查找历史版本；需要撤销某次修改时，通过新的撤销提交和 PR 保留完整历史。当前版本用于本机演示与研究复现，尚未承诺生产 SLA。
+
+Git 归档包含源码、配置模板和中英文 README。学习笔记、面试材料、设计方案、复盘和验证记录仅保存在本地，不提交到 GitHub。本机 `.env`、数据库数据及 `runtime/` 工件不在归档中，恢复部署时需另行配置。README 只列冻结结果与判据；原始逐题运行证据需要在本机保留的工件中核对。
+
+`.gitignore` 同时排除 `.env` 的各环境变体、凭据目录、私钥、数据库快照、Office/PDF 学习文件和评测结果目录；仅脱敏 `.env.example` 模板可入库。`.dockerignore` 对私有材料采用同样的排除范围，避免其进入构建上下文。`benchmarks/tasks.json` 是可复现的自建任务输入，继续归档；运行结果、预测、gold 数据及模型轨迹保存在本地 `runtime/`。忽略规则不会移除已经跟踪的文件或旧提交中的副本，取消跟踪需另行核对，保留本地原件。
+
+## 本地启动
+
+需要 Git、Docker Desktop/Linux Docker、Node.js 22 与 uv。
+
+```bash
+git submodule update --init --recursive
+uv sync --frozen
+uv run python scripts/configure.py
+uv run python scripts/prepare_baselines.py
+docker pull python:3.12-slim
+docker compose up -d --build --scale worker=2
+```
+
+页面：http://localhost:3100 。API：http://localhost:3101/health 。配置文件 `.env` 不提交。
+
+面试演示页：http://localhost:3100/showcase 。选择三个内置跨文件任务之一，可启动不访问收费模型的确定性执行。点击运行记录进入聚焦证据页，对照固定源码、关键执行事件、候选 diff、确定性评审意见，以及原始版本和候选版本的独立测试；也可进入完整工作台查看工具轨迹。页面默认展示通过验收的演示记录，也能切换查看最近失败或取消的记录；明确标注预设 Coder/Reviewer 与真实模型评测的边界。`GET /showcase` 和 `GET /showcase/runs/:id` 只返回本机数据库里的内置演示摘要，不混入 SWE-bench 运行。
+
+完整工作台的历史侧栏使用 `GET /runs/summary` 按创建时间与运行 ID 稳定分页，可按状态筛选，也能输入 Run ID 直接打开旧证据；原 `GET /runs` 保留给现有调用方。列表仅传运行摘要，详情在选中后单独读取，已结束的任务详情停止持续轮询，交付状态仍单独刷新。以本机相同 40 条记录实测，原列表响应 249.3 KB，摘要两页合计 8.65 KB，响应体缩小约 96.5%；这不是页面时延或生产吞吐指标。
+
+授权复用 TicketPilot 的模型时：
+
+```bash
+uv run python scripts/configure.py --ticketpilot-env /absolute/path/to/ticketpilot/.env
+docker compose up -d --force-recreate api worker
+```
+
+该脚本仅映射已知 openai-compatible 配置，保留独立的数据库密码和 Worker 令牌。不会打印凭据。
+
+## 验证
+
+```bash
+uv run --no-sync python scripts/doctor.py
+uv run --no-sync python scripts/verify_interview.py unit
+uv run --no-sync python scripts/verify_interview.py build
+# 仅在隔离测试栈运行中、且无需真实模型时：
+uv run --no-sync python scripts/verify_interview.py smoke
+```
+
+`unit` 在 `free-quota` 与 `official-deepseek` 两种宿主策略下运行无 Docker 测试；测试阻止意外 provider 调用。`build` 构建 API/Web。Docker 集成、故障注入和确定性部署冒烟是独立层级；`scripts/protocol_check.py` 会注入故障，必须在隔离栈且 Worker 停止、没有在途任务时执行。默认 smoke 仅使用确定性模型；`--live` 属于另行授权的真实模型评测。工件保存在本地 `runtime/`，不提交。
+
+失败运行可用 `scripts/diagnose_run.py <run-id> --output-dir <dir>` 只读扫描检查点，输出独立 `diagnostic.json/patch`；后者是**未提交、未验收的过程快照**，不会进入 `result.patch` 或官方预测。`scripts/interview_pack.py` 从明确的两条冻结 run 生成本地离线 HTML 证据包。`scripts/public_test_entry.py` 可对固定 base checkout 的已跟踪文件预检有界开发 smoke 入口；目前是只读辅助工具，尚未自动接入 image 任务，历史 Mini 任务的通用 `pytest` 命令与评分保持原样。
+
+## 仓库任务与基线
+
+网页选择基线任务，或填写公开 GitHub URL、完整 40 位 commit、子目录、问题说明、允许修改的文件和独立 unittest 验收代码。自定义仓库使用真实模型；内置基线支持预设动作与真实模型两种模式。
+
+执行过程：下载／读取固定源码快照 → RabbitMQ 分发 → Worker 在 Docker 沙箱运行上游 Agent → 检查修改范围 → 生成多文件 Git patch → 在原始副本上重新应用 → 使用同一镜像分别验收原始版本与候选版本。成功要求原始版本有断言失败、无测试加载错误，候选版本通过同一组非跳过测试且补丁非空。
+
+当前接收 UTF-8 普通文本，单文件不超过 100 KB、最多 200 文件、总量不超过 4 MB；不支持二进制、符号链接、submodule 或文件权限变更。执行环境为断网 Python 标准库环境，暂不支持任意依赖安装。开发命令与验收代码都只在沙箱中执行。
+
+本机私有仓库可先注册精确版本，不上传源代码到新 GitHub 仓库：
+
+```bash
+uv run python scripts/register_repository.py --repo /absolute/path/to/repo --id my-project --commit <40-character-commit>
+```
+
+注册器只读取指定 commit 的已跟踪文件，不执行仓库代码，不包含工作区未提交改动。页面仓库来源填 `registered:my-project`，commit 填注册时版本。注册产物位于本地 `runtime/repositories/`，只读挂载给 Worker；应仅注册适合交给模型处理的源码仓库。
+
+`prepare_baselines.py` 将三个自建任务构建为可重复生成的 Git 快照：订单优惠与运费、分页边界与切片、配置解析与默认值。每个任务需修复两个模块，含开发测试和五项独立验收。定义与预设修复位于 `benchmarks/tasks.json`，运行时仅将缺陷源码和开发测试放入模型沙箱。它们用于工程回归和小样本对照，不是 SWE-bench 数据集或泛化成绩。
+
+```bash
+# 预设修复验证全部基线与两种上下文模式，不调用模型
+uv run python scripts/evaluate_baselines.py
+# 真实模型配对实验：每任务每模式各运行一次，失败保留在分母
+uv run python scripts/evaluate_baselines.py --live
+# 可选重复实验；会增加模型调用消耗
+uv run python scripts/evaluate_baselines.py --live --repeats 3
+# 不调用模型，使用归档源码、测试、镜像 ID 和 patch 重新验收
+docker compose exec -T worker python -m repofix.replay <run-id>
+# 从完整轨迹恢复旧报告漏记的用量，另存报告，不调用模型或修改原报告
+uv run python scripts/evaluate_baselines.py --recover-report runtime/validation/<report>.json
+```
+
+运行工件保存源码快照、patch、测试摘要、源码／测试／补丁哈希、Git commit、容器 image ID、模型参数和完整轨迹。摘要在页面显示；完整报告位于本地 `runtime/validation/` 与 `runtime/artifacts/`，不提交。复现验收需保留这些工件和对应镜像；模型输出本身不保证逐次相同。
+
+## M1 Checkpoint
+
+Worker 在任务开始、工具结果完整返回和执行结束的安全边界保存 checkpoint：工作区文本文件（含新增和删除）、当前与完整会话、压缩记录、模型／工具调用计数、已用时间和已知费用。记录绑定任务、执行代次、原始源码摘要、沙箱镜像 ID 和 Agent／模型配置摘要，写入后经 Worker 认证、租约和连续序号检查登记到控制端。页面显示保存事件，`GET /runs/<run-id>/checkpoints` 返回登记记录。
+
+```bash
+# 将最新已登记 checkpoint 还原到一次性新沙箱，核对内容后销毁，不调用模型
+docker compose exec -T worker python -m repofix.checkpoint <run-id> --generation 1
+# 也可用 --checkpoint-id <id> 校验指定历史快照
+```
+
+运行工件位于 `runtime/artifacts/<run-id>/checkpoints/g<generation>/`。Python 的 `TracedAgent.restore_checkpoint(reference)` 可在同一有效执行代次、相同配置和镜像的新沙箱中，从最新安全边界继续；需先用该 checkpoint 的 files 初始化沙箱，再以原始 run/source 调用 `enable_checkpoints`。它保留已消耗预算，不重复已完成工具动作。恢复等待时间不计入已消耗执行时间；费用价格未知时仍不能据此宣称有真实美元预算控制。
+
+终态或过期快照、校验失败、配置／代次不匹配、有后台进程的工作区，以及模型／工具调用结果未确认的状态均不允许作为续跑点。snapshot checkpoint 仅覆盖上述文本工作区，不保存进程、环境变量或 `/tmp`；image 的 Git 差异恢复范围见下方。CLI 只校验还原；失联任务的自动重排队、跨代次恢复与审批恢复见下方 M3 章节，页面仍不提供“从此检查点恢复”按钮（恢复由协调器与审批决定触发）。恢复功能通过确定性故障测试验证，不代表真实模型效果评测。
+
+## M2 上下文管理：索引、预算、规则与记忆
+
+上下文策略选择 `managed` 时，Worker 在每次模型调用前重新组装请求，而不是直接发送累计历史。请求由四部分构成：系统规则与原始任务（逐字保留）、适用的项目规则文件（根目录及被涉及目录的 `AGENTS.md`，逐字保留，超出 16 KB 拒绝启动）、当前状态与证据（工作区摘要、已修改路径、有效记忆、检索到的代码片段、压缩后的结构化摘要），以及最近的会话历史。完整原始轨迹和每次调用的实际请求（`runtime/artifacts/<run-id>/context/call-N.json`）都独立保存。
+
+启动前需下载固定版本的本地 embedding 模型，不使用付费 API：
+
+```bash
+uv run python scripts/prepare_embeddings.py
+docker compose up -d --build --scale worker=2
+```
+
+`qdrant/bge-small-en-v1.5-onnx-q`（revision `52398278…`）通过 manifest 校验后只读挂载给 Worker；Qdrant 随默认 Compose 启动，仅监听本机端口。
+
+- **代码索引与版本**：源码按 AST 函数／类边界和行数切片，向量写入 Qdrant，payload 绑定项目、commit、索引 ID、embedding 版本和文件哈希。控制端记录每个索引头的待完成与已发布构建；只有 Worker 声明的全部点都已写入且清单一致时才发布，不完整、过期或代次不匹配的构建返回 409。检索只查询已发布索引，命中还必须与当前工作区的片段哈希一致才会被采纳，被修改或删除的文件片段立即失效；执行期间的修改进入本任务独立的覆盖层索引。Qdrant 或 embedding 不可用时退回当前文件的字面检索并记录 `INDEX_FALLBACK`，所有权错误则中止任务。
+- **预算与压缩**：按 UTF-8 字节作为 token 上界估算（`CONTEXT_WINDOW_TOKENS` 默认 16,384，另预留输出 1,600、协议 512、安全 1,024）。超过输入预算 65% 或在页面点击“请求下一步骤压缩”时，生成确定性的结构化摘要（目标、约束、最近决策、已改文件、最近一次测试摘录、未解决项、证据引用），只保留最近的完整动作组，不调用模型生成摘要。仍然超限时依次丢弃证据片段、更早历史和记忆；任务、规则和最近一组动作不可丢弃，超限则报错而不是静默截断。工具输出完整归档，模型可用 `repofix_read_log <id> <offset>` 回读。事件 `CONTEXT_ASSEMBLED` 记录估算值与来源，`CONTEXT_USAGE` 记录 provider 实际输入 token 的差值。
+- **项目规则**：`AGENTS.md` 作用域按目录嵌套，子目录规则只在其范围内覆盖父级；提示中明确规则低于平台策略和用户任务。
+- **显式记忆**：仅通过页面或 `POST /projects/<id>/memories` 显式保存，必须引用来源任务和事件；带乐观版本号，可编辑、停用、启用、删除、导出与导入 Markdown。记忆绑定保存时的 commit，commit 变化后标记“待复核”，需用新任务重新确认；创建任务时可关闭记忆读取。Worker 每次调用都从控制端重新读取有效记忆，控制端不可用时不使用缓存；提示中声明记忆和检索结果是证据而非权限。
+- **Checkpoint**：managed 模式的压缩状态与上下文配置纳入 checkpoint 绑定，恢复后沿用同一摘要状态。
+
+managed 工具输出绑定执行后的工作区哈希；后续文件变化时，旧版本输出在请求和最近测试摘要中替换为失效提示，要求重读或重新运行测试。原始内容保留在轨迹中，checkpoint 保留版本绑定。旧版轨迹中没有哈希的输出无法追溯判断。本轮修复后 Linux 测试共 29 项通过，最新上下文专项 8 项通过；部署冒烟确认修改后每次请求排除了 2 条过期输出。
+
+2026-09-16／17 功能验证：Linux Worker 镜像中 `pytest` 28 项通过（含发布索引隔离、修改／删除覆盖层、规则作用域与预算、长历史压缩与记忆撤销、控制端不可用不用缓存、日志回读、managed checkpoint 恢复）；`scripts/context_check.py` 在真实 Qdrant 与本地 embedding 上验证跨项目隔离、记忆停用／删除／版本冲突、commit 变化待复核、手动压缩持久化、不完整或过期构建不可发布；`scripts/context_smoke.py` 完成一次确定性 managed 任务并只读恢复其 checkpoint。这些是功能与故障检查，不是效果评测。managed 模式尚未做真实模型配对实验，不能宣称它提高成功率或节省 token；字节估算偏保守，实际 token 通常更少。
+
+## M3 可靠调度与审批
+
+任务执行不再依赖单条未确认消息：Worker 认领后先向控制端取恢复计划，再决定是全新执行、从检查点恢复，还是等待审批。演示任务与真实任务使用同一套协议。
+
+- **失联自动重排队**：Worker 心跳续租，租约过期时控制端检查该任务已登记的最新检查点，存在可恢复点且未超过 3 次恢复上限就重新入队，否则停在中断。被顶掉的旧 Worker 收到 409 后只停止本次尝试，不写任何状态。
+- **跨代次恢复**：重新认领会得到新的执行代次，新代次用检查点里的工作区重建沙箱，校验任务、来源、镜像、Agent 配置与工作区摘要后从同一安全边界继续，已消耗的模型调用、工具调用与计时一并继承。被中断步骤在沙箱内的副作用随容器丢弃，原尝试轨迹另存为 `runtime/artifacts/<run-id>/trajectory-before-recovery-g<N>.json`。
+- **版本绑定审批**：动作审批策略为 `auto`（默认，写入允许范围之外的位置时需批准）或 `strict`（所有文件写入都需批准）。命中时 Worker 在安全边界保存检查点并登记审批，任务进入“等待审批”；批准只对该动作与当时的工作区版本有效，恢复时再次核对动作哈希与工作区版本，拒绝则把决定作为观察交回模型。页面提供批准／拒绝按钮。
+- **共享模型并发配额**：Redis 令牌槽限制所有 Worker 合计的并发模型调用数（`MODEL_MAX_CONCURRENCY`，默认 2），槽位带 TTL，Worker 崩溃不会永久占用；Redis 不可用时记录 `QUOTA_UNAVAILABLE` 并拒绝新增模型请求（fail-closed），不解除跨 Worker 上限；image 模式的 Coder 与 Reviewer 都走同一入口，请求前检查取消与调用次数／时间／费用预算。
+- **孤儿沙箱回收**：Worker 周期扫描带 `repofix.managed=sandbox` 标签的容器，只清理不属于活跃运行且超过 90 秒宽限的容器；控制端不可达时不做任何删除。
+- **broker 断线重连**：控制端发布 Outbox 失败时重建连接，未发布的行保留到下个周期重发。
+
+确定性验证（无生成模型调用）：`scripts/approval_smoke.py` 在 `strict` 策略下暂停、批准、跨代次恢复并完成验收；`scripts/recovery_check.py` 注入租约过期，验证重排队、从登记检查点恢复、旧尝试不留状态与无主沙箱被回收；`scripts/quota_check.py` 在真实 Redis 上验证峰值并发等于上限、等待者串行与槽位回收。Linux Worker 镜像 48 项 pytest、协议检查 16 项、ruff、构建与页面检查通过。这些是功能与故障检查，不是效果评测。交付流程的控制端协议（30 项协议检查中的 6 项）与端到端冒烟见「交付到目标仓库」。
+
+```bash
+# 严格审批路径：暂停、批准、跨代次恢复、独立验收（确定性任务）
+uv run python scripts/approval_smoke.py
+# 故障注入：租约过期后自动重排队并从检查点恢复；同时检查孤儿沙箱回收
+uv run python scripts/recovery_check.py
+# 真实 Redis 上的共享模型并发配额
+docker compose exec -T worker sh -c 'python scripts/quota_check.py'
+```
+
+## 交付到目标仓库（最终 patch 审批）
+
+Agent 始终只在私有沙箱里工作，看不到宿主路径。候选通过独立验收（或官方 harness 判定 resolved）之后，把补丁应用到你自己的 checkout 是一个单独审批、单独执行的动作，由宿主侧执行器 `scripts/deliver.py` 完成，控制端只记录与仲裁：
+
+1. `prepare`：在本机核对目标是 Git 工作树根目录、含任务固定的 base commit，补丁影响的每个文件当前内容都等于 base 版本（新增文件不存在、删除／修改文件与 base blob 一致；用 `git hash-object --path` 比较，兼容 autocrlf checkout），并在临时 index 上预演补丁。通过后把目标路径、HEAD、影响文件（含前后 blob）、目标指纹和执行器令牌哈希登记到控制端，状态 `PENDING`，30 分钟有效。任何一项不满足就不登记；目标已含候选内容时提示无需交付；文件处于"既非 base 也非候选"的混合状态时要求人工处理。
+2. 页面「交付到仓库」页签展示目标、HEAD 是否与基线相同、影响文件、补丁哈希与目标指纹及完整 diff；批准请求带上页面看到的补丁哈希与指纹，登记内容不同则拒绝。同一目标登记新快照会作废旧的未决审批。
+3. `apply`：只有持有令牌的登记执行器能认领（`APPLYING`）；写入前重新计算指纹，目标或 HEAD 变了就回报 `INVALIDATED` 不写任何文件；`git apply --check` 失败回报 `NEEDS_ATTENTION`；写入后校验每个文件等于预期候选 blob 才记 `APPLIED`。目标已含全部候选内容时记 `APPLIED(already_applied)` 而不重写；重复运行、执行器中途崩溃后重跑都不会二次写入。目标里与补丁无关的未提交改动原样保留。
+
+```bash
+# 任务通过验收后，在你的机器上：
+python scripts/deliver.py prepare --run <run-id> --target <你的仓库根目录>
+# 在页面批准后：
+python scripts/deliver.py apply --delivery <delivery-id>
+# 端到端确定性冒烟（演示任务补丁落到 runtime/delivery-target，含无关改动保留、作废与混合状态）
+python scripts/delivery_smoke.py
+```
+
+它不做的事：不 commit、不改 index、不处理二进制或重命名以外的特殊文件、不跨机器执行（登记与应用必须是同一台机器上的同一执行器状态文件 `runtime/deliveries/<id>.json`）。交付接口与任务接口一样只对本机开放。
+
+## M4 独立评审与工作台
+
+交付前的评审是一个独立角色，不是第二个执行者：它拿到的只有任务、允许修改的路径、候选 diff、变更后的源码，以及评审前重新跑一遍的开发测试输出；不继承执行者的对话历史，没有工具，也不能写任何文件。
+
+- **结构化意见**：输出为 `file / line / severity / finding / trigger / evidence / suggestion`，每条意见必须指向候选版本里真实存在的文件与行，指不到的意见被丢弃并计数；整段解析不出来记为该次评审失败，而不是“没有问题”。
+- **有限修订**：每个候选版本评审一次，出现阻断项时把意见交回执行者修订，默认上限两轮（每次运行可配 0–5）；候选版本一变，上一份评审立即标为过期。
+- **意见处置**：Coder 可声明修复，或用测试／代码证据反驳；Reviewer 在独立上下文中逐条复核，保存 `fixed / rejected_with_evidence / unresolved / unverified`。未复核不能算修复；不改代码的反驳也能触发复评。轮次耗尽的阻断项保留记录。
+- **共享预算**：`reviewBudget=shared` 时 Coder 与 Reviewer 共用原有调用上限；`extra` 保留每轮修订额外 5 步的默认行为。网页可选，API 持久化并纳入幂等创建检查。“同预算”指相同调用数、单次输出和时间上限，不表示实际输入 token 或费用相等。
+- **判定权仍在验收**：修订额度用尽仍有阻断项时记录为未解决，独立验收照常判定；评审本身失败也继续，不会因为评审把运行卡死。评审调用计入本次运行的模型用量（与执行者共用预算）。
+- **工作台**：候选补丁页签用只读的 Monaco 侧栏对比固定基准与候选版本，评审意见可以跳到它命名的行；评审历史按轮次显示，并标出哪一份已被修订取代。
+- **可观测**：控制端为每条投递生成 W3C `traceparent` 放进队列消息，Worker 续接并导出模型调用、工具执行、评审和适用的验收 spans 到 Jaeger。控制端当前未导出 API producer span，不能据此推断 API、数据库和 broker 的完整跨服务时延。
+
+```bash
+# 评审闭环：评审发生在验收前、一轮有限修订、旧评审过期、复评干净（确定性任务）
+uv run python scripts/review_smoke.py
+# 一次运行的 trace：控制端 → 消息 → Worker 的传播与步骤 span
+uv run python scripts/trace_check.py
+# 故障矩阵：把已有故障注入按顺序跑一遍，输出注入/期望/观测（约 6 分钟）
+python scripts/fault_matrix.py
+```
+
+SWE-bench 的接线（实例 → 任务、运行 → 官方预测文件、官方报告 → 本地记录、联网/磁盘预检）在 `scripts/swebench.py`。2026-09-19 用本机缓存的实例镜像、真实模型补丁和官方 harness 跑了一个 **10 实例样本**（覆盖 astropy / sympy / scikit-learn / matplotlib / pylint / xarray / pytest 七个仓库，先用 gold 补丁筛掉本机环境不可评测的实例）：**3/10 resolved**——`astropy__astropy-12907`（补丁与 gold 的代码 hunk 逐字节相同）、`sympy__sympy-20590`、`scikit-learn__scikit-learn-13584` 通过；另外 3 个产出了补丁但没解决问题（其中 1 个引入回归），4 个根本没走到提交（2 次步数预算耗尽、2 次连续格式错误）。样本流程由 `scripts/swebench_subset.py` 一条命令复现。`preflight` 仍会如实报告其他实例的镜像、磁盘或依赖缺口。2026-09-22 的无 gold 提示配对结果与暂停边界见下方，历史样本与当前模型／提示配置不可合并。
+
+## 上下文对照与边界
+
+### image 工作区恢复与工件
+
+image 任务先将一次性容器中的仓库还原到指定 `base_commit`，再让 Agent 读取；官方镜像里的额外准备提交不会充当任务基线。检查点绑定不可变镜像 ID、base commit、任务与 Agent 配置，保存二进制 Git 差异及会话、调用次数和已用时间。跨代次恢复重新创建沙箱、重放差异、核对哈希，再继承预算继续。`python -m repofix.checkpoint <run-id>` 同样支持 image 模式的只读还原检查。
+
+恢复范围是 Git 跟踪与未忽略的仓库文件；忽略的缓存、依赖安装、进程、容器其他目录和 `/tmp` 不在范围内。仍强制 full context，不启用 shell 动作审批。差异超出检查点的 4 MiB 编码快照上限或工作区有后台进程时拒绝保存，不静默截断。
+
+产出候选后保存全部变更文件的 `file-changes.json`、内容寻址的 base/candidate 原始 `blobs/`、完整二进制 `candidate.patch`，以及 UTF-8 预览 `source.json` / `candidate.json`。支持新增、删除、大文件、二进制文件与超过 60 个变更文件；基线仓库其余内容由固定镜像和 commit 标识。网页仍有显示上限，省略项单独计数，完整 blob 不因预览限制丢弃。候选差异页可逐文件下载基准与候选原始内容；API 只返回本次运行清单列出的 blob，并在下载时校验字节数与 SHA-256。
+
+模型请求前按 `MODEL_POLICY` 校验路由，规则见 `services/agent-worker/repofix/model_policy.py`。`free-quota` 只接受用户列出的 9 个免费名称；`official-deepseek` 只接受官方 `https://api.deepseek.com` 的 `deepseek-flash`，按官方价格计费。官方路由明确关闭思考模式，Coder 与 Reviewer 均不自动重试或切换模型。切换路由需在本机 `.env` 设置 `MODEL_POLICY`、`MODEL_NAME`、`MODEL_BASE_URL`、`MODEL_API_KEY` 并重建 Worker；配置本身不会启动模型评测。
+
+以下日期对应的评测记录及批次结束时的服务状态属于历史记录，不代表本机当前容器或模型配置。
+
+### 2026-09-22 冻结小样本
+
+本机已有镜像的五实例（scikit-learn-13584、pytest-7220、xarray-4248、pylint-6506、matplotlib-18869）按 Reviewer 开／关配对，固定每组总模型步骤 60、单次输出 1600、墙钟 900 秒。无 gold 路径或隐藏测试提示，未在本次按 gold 筛掉实例；样本此前参与过本地开发，不能当作未接触的随机样本。
+
+`deepseek-v4.1-flash` 的官方结果为 **关闭 1/5、开启 1/5 resolved**，均只有 scikit-learn-13584 通过；pytest、xarray、pylint 两组在提交前出现连续格式错误，matplotlib 两组免费额度耗尽。排除额度中断后的条件成绩均为 1/4，但原始分母仍为 5；不能声称 Reviewer 带来提升。两组共记录 195 次逻辑调用、1,290,169 个已报告输入／输出 token，失败请求有未知用量。冻结 Worker 的 Coder 传输层最多尝试两次；模型步骤预算并不等于实际 HTTP 请求数或相等 token。
+
+另做 4 次真实 Reviewer 校准：检出 2 个已知缺陷、2 个干净补丁无阻断误报。该小样本不足以估计总体准确率。
+
+按用户要求切换 `deepseek-v4-pro-0813` 后，为 matplotlib 重新冻结两组；暂停时共记录 68 次逻辑调用、671,947 个输入／输出 token，尚无官方判定。用户随后要求等待大额度模型，已停止模型评测并保留轨迹／检查点，**不把暂停的 pro 尝试算作已完成或并入 resolved 率**。API token 与平台额度扣减口径可能不同。
+
+冻结、精确 run ID 导出和离线官方验收脚本为 `scripts/frozen_evaluation.py`；`--judge-only` 不提交模型任务。运行工件仅留本地。后续评测需重新确认模型与总 token 预算，当前不会自动尝试其他免费模型。
+
+### 2026-09-23 官方 DeepSeek Flash 配对复测
+
+用户配置并授权官方 `deepseek-flash` 后，按同一五实例、同一配对顺序与共享限制重跑：每组 Coder/Reviewer 合计最多 60 次模型调用、每次最多输出 1600 token、墙钟 900 秒；`contextMode=full`，不启用记忆，不提供 gold 文件路径或隐藏测试提示，也不按 gold 筛实例。样本是本机缓存镜像的便利样本，部分实例参与过此前开发，不能视为随机或未接触样本。
+
+首批冻结目录 `runtime/validation/frozen-20260923-official-flash-five-paired/`，官方 harness 为 Reviewer 关闭 **1/5**、开启 **1/5 resolved**，都仅 scikit-learn-13584 通过。开启组的 xarray、pylint、matplotlib 在修订时把内部 `exit` 消息当作 API chat role 发送，DeepSeek 拒绝请求；三条失败保留在原始分母。发现后修复了修订消息边界，完整轨迹仍保留内部提交标记，回归测试及 Linux Worker 全套 113 项通过，修复提交 `344471a`。
+
+修复后从新 Worker 镜像重新冻结全部五组配对，而不是只重试失败实例。目录 `runtime/validation/frozen-20260923-official-flash-fixed-five-paired/` 的官方结果仍为关闭 **1/5**、开启 **1/5 resolved**，均仅 scikit-learn-13584 通过。pytest 两组均被 harness 标为 `no_tests_collected` 的不确定失败；xarray 开启组修订耗尽 60 次调用；pylint 关闭组因工作区有后台进程而被检查点静稳条件拒绝提交。其余未通过实例保留为未解决，不将执行成功等同于官方解决。
+
+修复批次 Reviewer 开启组记录 11 条意见处置项：xarray 两轮评审、一次有证据的 Coder 反驳，但 Reviewer 未明确复核确认；这些意见均保守标为 `unverified`，其中一个阻断项未解决。其余开启组没有进入修订轮，意见亦未核实。该五例小样本没有显示 Reviewer 提高 resolved 率，也不能据此估计总体效果。
+
+两批 20 条运行共记录 **689 次逻辑模型调用、686 次带用量的回复、5,579,209 个已报告输入/输出 token**（首批 2,974,437，修复批 2,604,772）。首批三个被拒请求没有返回 token 用量，因此该数是可观测下界，平台实际扣减可能不同。用户设置的总额约 20M token；本次在 18M 已报告 token 处设置自动停 Worker 阈值，实际未触及。评测完成后 Worker 已停止；不会自动扩样或续跑。
+
+### 2026-09-23 面试向补充评测
+
+在用户指定的北京时间 12:00—14:00 窗口内，完成另三例 SWE-bench Lite 便利样本的冻结配对与官方 harness：`pallets__flask-4045`、`pallets__flask-4992`、`psf__requests-1963`。选择清单先于模型调用写入 `runtime/validation/interview-20260923-holdout-selection.json`，冻结目录为 `runtime/validation/frozen-20260923-interview-holdout-three-paired/`。仍使用完整上下文、记忆关闭、无 gold 文件/测试提示、Reviewer 开关各一组，共享最多 60 次 Coder+Reviewer 调用与 900 秒墙钟。六次 Agent 运行均交付非空补丁，但官方结果为 **关闭 1/3、开启 0/3 resolved**，只有 Requests 关闭组通过。关闭组 58 次模型调用、240,398 已报告 token；开启组 83 次、381,936 token。开启组四条 Reviewer 意见处置均为 `unverified`，一个阻断项未闭环；本小样本不能证明 Reviewer 提升，实际 token 也不相等。
+
+同一官方模型上另做四个固定 Reviewer 校准样本：两个已知缺陷都被指出为阻断，两个正确补丁都没有阻断意见；这是微型功能检查，不能估计总体查准/查全。三项自建跨文件任务以 Reviewer 关闭、记忆关闭方式分别运行 `full`、`compact`、`managed` 各三次，并轮换顺序；`scripts/evaluate_baselines.py --live --contexts full compact managed --repeats 3 --review-policy off` 报告在 `runtime/validation/interview-20260923-context/`。三组**各 6/9 独立验收通过**，27 次用量记录全部完整；9 次失败都漏了任务明写的折扣范围校验。已报告输入加输出 token 分别为 **25,827 / 30,397 / 54,724**，平均端到端时长 **11.17 / 11.96 / 12.67 秒**。这三个小任务上 `managed` 没有带来成功数或 token 优势；自建任务显式提供允许路径，不能作为 SWE-bench 成绩。
+
+确定性系统验证另覆盖 7/7 类故障矩阵、交付 6/6、双 Worker 并行 2/2、上下文 smoke 6/6 与 Worker 镜像内上下文检查 7/7；Linux Worker 全套 pytest **114 passed**，API/Web 镜像构建通过。它们是系统行为证据，不计入真实模型解决率。截至本节这一批次，新增 33 次 Agent 运行与四次直接 Reviewer 校准合计 **736,027 个已报告 token**；连同上述两批，累计 **6,315,236 个已报告 token**。首批三次被拒请求用量未知，累计为可观测下界。
+
+### 2026-09-23 SWE-bench Verified Mini 固定十题
+
+[Verified Mini](https://github.com/mariushobbhahn/SWEBench-verified-mini) 是第三方从人工筛选的 SWE-bench Verified 500 题中构建的 50 题子集，仅含 Django 与 Sphinx；[Inspect Evals](https://github.com/UKGovernmentBEIS/inspect_evals/blob/main/src/inspect_evals/swe_bench/swe_bench.py) 也提供该子集入口。它适合在本机做更小的仓库修复实验，但不是 SWE-bench 官方排行榜的独立赛道。本次先固定六题，查看官方 verdict 前按固定位置扩为十题（Django/Sphinx 各五），不按 gold 筛题；选择文件为 `runtime/swebench/verified-mini-ten-selection.json`。十题仍不是完整 50 题成绩，也不是随机样本。
+
+保持官方 `deepseek-flash`、同一 Worker 镜像、完整上下文、记忆关闭；Reviewer `off/auto` 各一次，Coder 与 Reviewer 共享 60 次调用、900 秒墙钟和每次 1600 输出 token 上限。Mini 发布集缺少新版 harness 需要的 `eval_script` 等元数据，`scripts/prepare_verified_mini.py` 将其与 [官方 Verified 数据集](https://huggingface.co/datasets/SWE-bench/SWE-bench_Verified) 同 ID 行补齐；题述、基准提交、gold 补丁和测试补丁逐项核对一致。模型运行后才由 SWE-bench 5.0.2 官方 harness 独立验收，元数据不进入 Agent 提示。冻结、精确 run ID、预测和逐例报告留在 `runtime/validation/frozen-20260923-verified-mini-*/`，汇总见 `runtime/validation/verified-mini-ten-summary.json`。
+
+| Reviewer | 官方 resolved | 有补丁 | 空补丁 | 模型调用 | 已报告 token | 意见处置 |
+| --- | ---: | ---: | ---: | ---: | ---: | --- |
+| 关闭 | **4/10** | 6/10 | 4/10 | 371 | 4,058,124 | 不启用 |
+| 开启 | **5/10** | 6/10 | 4/10 | 380 | 4,095,065 | 5 条 `unverified`，无未闭环阻断项 |
+
+两组 20 次运行用量均完整；官方报告的基础设施错误和不确定错误都是零。只有 `django__django-12039` 一题出现关组未通过、开组通过；其余九题两组结论相同。关组与开组各四题无补丁：主要是 60 次调用耗尽，开启组另有一例因后台进程使 image 检查点未达到静稳条件。即使本次开启组多通过一题，十题的非随机小样本不足以证明 Reviewer 普遍提升，也不能与先前 Lite 样本合并为榜单成绩。该批新增 **8,153,189** 个已报告 token；连同前述批次累计 **14,468,425**，低于用户约 20M 总额，且 Worker 已停止、API 的 `LIVE_ENABLED=false`。
+
+### 2026-09-24 Verified Mini 全 50 题与调用上限复核
+
+在上述 10 题之后，Reviewer 关闭组又运行 20 题，官方 harness 判定 **16/20 resolved**；前 30 道不同 issue 合计 **20/30**，每题最多 60 次调用。随后按 Mini 数据集原顺序补齐其余全部 **20 道**，每题最多 100 次调用，得到 **13/20 resolved**。因此 50 道不同 issue 的首次尝试已全部完成，混合调用上限下为 **33/50 resolved**。本机仅完成第三方 Verified Mini 50 题的适配评测，不能当作 SWE-bench Verified 500 题官方榜单成绩；前 30 题与后 20 题调用上限和 Worker 构建不同，也不能当作同配置对照。
+
+在重试前固定前 30 题中全部 10 道首轮未通过题，以 100 次上限逐题串行复核，**1/10** 转为通过；最多两次尝试的最好结果为 **34/50**，不是 pass@1。唯一恢复题本次仅调用 12 次，另有 5 道再次耗尽 100 次，因此现有数据不能证明提高上限提升成功率。空补丁、未通过补丁和每次用量均保留。Mini 的最终 `resolved` 由 SWE-bench 官方 harness 在独立环境评分；RepoFix 负责任务编排、固定 commit 工作区、Agent 工具循环、补丁生成与导出。项目自有的基线/候选隔离验收器用于配置了测试的任务，不能把官方 harness 算作自研能力。
+
+本轮新增 30 次 Agent 运行用量为 **25,553,715** 已报告 token；连同旧评测累计 **45,025,293**。早期三个被服务端拒绝的请求没有返回用量，累计值是可观测下界。逐次预测、官方验收 manifest 与运行工件仅存本机 `runtime/validation/` 和 `runtime/artifacts/`，不上传 Git。`IMAGE_STEP_LIMIT` 控制 image 工作区的调用上限，默认 60，本轮 Worker 显式设为 100。该批评测结束时曾停止所有容器与 Docker Desktop，随后按用户新要求恢复 RepoFix 服务；本机 `.env` 的 `LIVE_ENABLED=false`，未来真实模型调用需重新显式启用。
+
+### 2026-09-24 其他历史 60 次耗尽样本复测
+
+用户把本任务累计 token 上限提高到 60M 后，排除当天上午已经复测的 Mini 关闭组 10 题，从 9 月 23 日晚至 24 日凌晨的冻结运行中按原 run ID 固定其余 **5 条达到 60/60 次、以 `LimitsExceeded` 结束**的样本：SWE-bench Lite 的 pytest 关闭组与 xarray Reviewer 开启组，Mini 的 Django 一条及 Sphinx 两条 Reviewer 开启组。原题、Reviewer 设置和官方 `deepseek-flash` 保持不变；新运行最多 100 次共享调用，逐条用官方 harness 验收。**5/5 有效复测完成，0/5 resolved**。其中两条产出补丁但未解决，三条在 100 次后仍无最终补丁；不能声称提高上限提升修复率。历史和当前 Worker 构建不同，亦不能将差异只归因于预算。
+
+pytest 首次补跑在 51 次有用量回复后遇到连接错误，另以新 request key 补跑；基础设施中断不计入五条有效结果，已知 **511,927 token** 留在累计用量内。五条有效复测新增 **8,940,566 token**；所有评测累计已报告下界 **54,477,786 / 60,000,000**，为本次连接错误和历史三次服务端拒绝共四个未知请求各预留 1,200,000 后的保守上界 **59,277,786**。这批复测不改变 Mini 首轮 33/50，也不改变原十题 Reviewer 配对。逐次 run ID、预测、官方结果与轨迹留在本机 `runtime/validation/historical-60-limit-to-100-*` 和 `runtime/artifacts/`，不上传 Git。按用户最新要求，Docker Desktop 及 RepoFix 服务保持运行，API 的 `LIVE_ENABLED=false`；重启或查看现有服务不会自动提交付费模型任务。
+
+`full` 保留完整会话历史。`compact` 在历史超过 3,500 字符且有足够旧消息时，用不超过约 1,200 字符的历史摘录替换较早消息，保留系统规则、原始任务及最近四条消息。完整原始轨迹独立保存，token 汇总使用完整记录，页面显示压缩事件。
+
+这是有损的抽取式压缩 v1，不是语义摘要或长期记忆；字符阈值不是精确 token 预算。小任务可能不触发，或压缩后反而需要更多调用，必须结合实测成功率和 token 判断。自建任务数量小，单次配对不能证明统计显著提升。
+
+2026-09-16 首轮实测：三个任务的两模式预设运行共 6/6 通过；沿用 `deepseek-v4-flash-0731` 的真实单次配对，full 为 1/3、compact 为 2/3。失败包括两次连续模型输出格式错误和一次漏修折扣范围校验。只有一次真实运行触发压缩（5,001 → 3,985 字符）。两次格式失败的用量原先被失败上报遗漏，现已从完整轨迹恢复：full 输入／输出合计 7,163／1,770 token，compact 为 9,070／4,900 token，六次运行均有完整记录。本组样本没有显示 token 节省，成功率差异也不能归因于压缩。另一个自定义仓库请求成功修改两个文件，真实候选补丁已通过无模型重放验收。
+
+成功与失败运行均汇总轨迹中的用量，包括格式错误回复。`usage_status` 区分完整、部分与不可用；部分记录只是已知 token 的小计，不代表整次运行消耗。基线报告同时列出完整覆盖的运行数。格式重试提示包含正确的命令块示例，连续三次格式错误仍会停止。
+
+当前只面向单用户本机运行。用户登录、S3 工件存储与 SWE-bench Verified 500 题评测尚未完成；第三方 Verified Mini 50 题已完成首轮；独立 Reviewer 与 OTel trace 已实现，小样本配对结果不一致，尚不能证实 Reviewer 有普遍效果，trace 也只在配置了 OTLP 端点时开启。任务失联会按已登记检查点自动重排队（最多 3 次），超过上限或没有可用检查点时停在中断；审批策略是确定性写命令解析，不是完备的能力模型，沙箱、允许路径校验与独立验收仍是实际边界。Redis 用于共享模型并发配额，仅在 Compose 内部可达。没有用户体系，审批接口与任务接口一样只对本机开放。固定测试验收不保证任意对抗代码无法干扰测试进程。SWE-bench 历史十实例样本经官方 harness 得到 3/10 resolved（另有 2 个实例因本机环境单列）；另有无 gold 提示的 Lite 五实例与三实例配对、Verified Mini 十实例配对；Mini 全 50 题的混合上限结果见上节，均不能代表 Verified 500 题总体成绩。`scripts/swebench.py preflight` 会如实报告镜像、磁盘与依赖缺口。live 运行使用配置里的模型凭据；**返回 200 不等于免费**；路由按 `MODEL_POLICY` 明确选择。本次评测结束后 Worker 与其他 RepoFix 服务保持运行，API 的 `LIVE_ENABLED=false`。
+
+## 停止
+
+```bash
+docker compose down
+```
+
+默认保留数据库与工件，不使用 `down -v` 删除数据。应用只监听本机端口，尚未实现公开服务所需的用户认证。

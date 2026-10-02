@@ -12,10 +12,11 @@ runtime/
 test-results/
 playwright-report/
 
-# Keep learning, design and validation documents local; publish README only.
+# Keep learning, design and validation documents local; publish the READMEs only.
 /docs/
 *.md
 !/README.md
+!/README.zh-CN.md
 
 # 官方 harness 的评测日志（本地证据，不入库）
 logs/
