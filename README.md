@@ -40,7 +40,7 @@ Older descriptions of Redis fail-open behavior, automatic selection of historica
 
 ## Repository contents and releases
 
-Private repository: [FionnLeee/RepoFix](https://github.com/FionnLeee/RepoFix), default branch `main`. Clone with `git clone --recurse-submodules https://github.com/FionnLeee/RepoFix.git` to obtain the pinned upstream dependency.
+Public repository: [FionnLeee/RepoFix](https://github.com/FionnLeee/RepoFix), default branch `main`. Clone with `git clone --recurse-submodules https://github.com/FionnLeee/RepoFix.git` to obtain the pinned upstream dependency.
 
 Validated improvements are committed on topic branches and proposed to `main` through PRs. Merged `main` is the archived source baseline. Use `git log --oneline` to find historical versions, and use revert commits and PRs to preserve history when undoing changes. This version targets local demonstrations and research reproduction; it has no production SLA.
 

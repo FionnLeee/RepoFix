@@ -40,7 +40,7 @@
 
 ## 代码归档与版本发布
 
-私有仓库：[FionnLeee/RepoFix](https://github.com/FionnLeee/RepoFix)，默认分支 `main`。克隆时使用 `git clone --recurse-submodules https://github.com/FionnLeee/RepoFix.git` 获取固定版本的上游依赖。
+公开仓库：[FionnLeee/RepoFix](https://github.com/FionnLeee/RepoFix)，默认分支 `main`。克隆时使用 `git clone --recurse-submodules https://github.com/FionnLeee/RepoFix.git` 获取固定版本的上游依赖。
 
 每轮改进通过适用验证后，在主题分支提交并向 `main` 发起 PR；合并后的 `main` 是归档代码基线。通过 `git log --oneline` 查找历史版本；需要撤销某次修改时，通过新的撤销提交和 PR 保留完整历史。当前版本用于本机演示与研究复现，尚未承诺生产 SLA。
 
