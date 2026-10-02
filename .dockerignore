@@ -59,6 +59,9 @@ benchmarks/**/*results*.json
 benchmarks/**/*report*.json
 **/.venv
 **/.venvs
+**/.direnv
+**/.pytest_cache
+**/.ruff_cache
 **/privatecredentials
 **/.aws
 **/.ssh
