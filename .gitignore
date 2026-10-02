@@ -19,3 +19,65 @@ playwright-report/
 
 # 官方 harness 的评测日志（本地证据，不入库）
 logs/
+
+# Only sanitized environment templates may be versioned.
+.env*
+!.env.example
+.envrc
+.direnv/
+.venvs/
+
+# Credentials, private keys and database snapshots.
+privatecredentials/
+credentials/
+secrets/
+credentials.*
+secrets.*
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+*.keystore
+id_rsa
+id_ed25519
+.aws/
+.ssh/
+.npmrc
+.pypirc
+.netrc
+.git-credentials
+service-account*.json
+service_account*.json
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
+*.sqlite3-*
+*.dump
+
+# Local guidance, study files and evaluation outputs.
+/.claude/
+/.codex/
+/.planning/
+/notes/
+/learning/
+/study/
+/interview/
+/outputs/
+/artifacts/
+/reports/
+/tmp/
+/temp/
+/benchmarks/results/
+/benchmarks/reports/
+/benchmarks/**/*results*.json
+/benchmarks/**/*report*.json
+*.doc
+*.docx
+*.pdf
+*.ppt
+*.pptx
+*.odt
+*.rtf
+*.ipynb

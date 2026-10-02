@@ -44,6 +44,8 @@
 
 Git 归档包含源码、配置模板和本 README。学习笔记、面试材料、设计方案、复盘和验证记录仅保存在本地，不提交到 GitHub。本机 `.env`、数据库数据及 `runtime/` 工件不在归档中，恢复部署时需另行配置。公开 README 只列冻结结果与判据；原始逐题运行证据需要在本机保留的工件中核对。
 
+`.gitignore` 同时排除 `.env` 的各环境变体、凭据目录、私钥、数据库快照、Office/PDF 学习文件和评测结果目录；仅脱敏 `.env.example` 模板可入库。`.dockerignore` 对私有材料采用同样的排除范围，避免其进入构建上下文。`benchmarks/tasks.json` 是可复现的自建任务输入，继续归档；运行结果、预测、gold 数据及模型轨迹保存在本地 `runtime/`。忽略规则不会移除已经跟踪的文件或旧提交中的副本，取消跟踪需另行核对，保留本地原件。
+
 ## 本地启动
 
 需要 Git、Docker Desktop/Linux Docker、Node.js 22 与 uv。
