@@ -75,7 +75,7 @@ jobs:
           password=$(openssl rand -hex 24)
           echo "::add-mask::$password"
           echo "DEMO_PASSWORD=$password" >> "$GITHUB_ENV"
-          hash=$(printf '%s' "$password" | docker run --rm -i caddy:2-alpine caddy hash-password)
+          hash=$(printf '%s\n' "$password" | docker run --rm -i caddy:2-alpine caddy hash-password)
           echo "DEMO_PASSWORD_HASH=$hash" >> "$GITHUB_ENV"
       - name: Start the isolated hosted demo
         env:
@@ -105,7 +105,7 @@ jobs:
           DEMO_USERNAME: ci-demo
         run: |
           docker compose logs --tail 100 api worker web
-          if test -f .env.hosted; then
+          if test -f .env.hosted && test -n "$DEMO_PASSWORD_HASH"; then
             docker compose --env-file .env.hosted -f infra/compose.hosted.yaml logs --tail 100 api worker gateway
           fi
       - name: Stop isolated CI stack
