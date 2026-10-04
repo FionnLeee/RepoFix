@@ -20,7 +20,7 @@ def main():
         health = client.get("/api/health", auth=auth).raise_for_status().json()
         assert health["liveEnabled"] is False
         assert client.post("/api/runs", auth=auth,
-                           json={"mode": "live", "requestKey": uuid4().hex}).status_code == 400
+                           json={"mode": "live", "requestKey": uuid4().hex}).status_code == 409
         baselines = client.get("/api/baselines", auth=auth).raise_for_status().json()
         assert baselines
         created = client.post("/api/runs", auth=auth, json={

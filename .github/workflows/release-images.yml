@@ -41,7 +41,7 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ github.token }}
-      - name: Compute immutable image tag
+      - name: Compute commit image tag
         run: echo "IMAGE=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/${{ matrix.image }}:sha-$GITHUB_SHA" >> "$GITHUB_ENV"
       - uses: docker/build-push-action@v7
         with:
