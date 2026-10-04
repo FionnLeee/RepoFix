@@ -1,0 +1,120 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+      - uses: astral-sh/setup-uv@v9.0.0
+        with:
+          version: "0.12.6"
+      - run: uv sync --frozen
+      - run: uv run --no-sync python scripts/verify_interview.py unit
+
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+      - run: npm install --global pnpm@10.17.1
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm typecheck
+      - run: pnpm build
+
+  deployment-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@v9.0.0
+        with:
+          version: "0.12.6"
+      - run: uv sync --frozen
+      - run: uv run python scripts/configure.py
+      - run: uv run python scripts/prepare_baselines.py
+      - run: docker pull python:3.12-slim
+      - run: docker compose up -d --build --wait --wait-timeout 180
+      - run: uv run --no-sync python scripts/verify_interview.py smoke
+      - name: Check web entry
+        run: curl --fail --silent --show-error http://127.0.0.1:3100/showcase > /dev/null
+      - run: docker compose down --remove-orphans
+      - name: Configure the isolated hosted demo
+        run: |
+          uv run python scripts/configure.py --output .env.hosted
+          password=$(openssl rand -hex 24)
+          echo "::add-mask::$password"
+          echo "DEMO_PASSWORD=$password" >> "$GITHUB_ENV"
+          hash=$(printf '%s' "$password" | docker run --rm -i caddy:2-alpine caddy hash-password)
+          echo "DEMO_PASSWORD_HASH=$hash" >> "$GITHUB_ENV"
+      - name: Start the isolated hosted demo
+        env:
+          REPOFIX_DOMAIN: localhost
+          DEMO_USERNAME: ci-demo
+          GATEWAY_BIND: 127.0.0.1
+          HTTP_PORT: "8088"
+          HTTPS_PORT: "8443"
+        run: docker compose --env-file .env.hosted -f infra/compose.hosted.yaml up -d --build --wait --wait-timeout 180
+      - name: Trust the isolated gateway certificate
+        env:
+          REPOFIX_DOMAIN: localhost
+          DEMO_USERNAME: ci-demo
+        run: |
+          mkdir -p runtime/validation
+          timeout 60 bash -c 'until docker compose --env-file .env.hosted -f infra/compose.hosted.yaml cp gateway:/data/caddy/pki/authorities/local/root.crt runtime/validation/gateway-ca.crt; do sleep 2; done'
+      - name: Test the hosted gateway and repair
+        env:
+          DEMO_USERNAME: ci-demo
+          DEMO_BASE_URL: https://localhost:8443
+          DEMO_CA_FILE: runtime/validation/gateway-ca.crt
+        run: uv run --no-sync python scripts/hosted_smoke.py
+      - name: Show failure logs
+        if: failure()
+        env:
+          REPOFIX_DOMAIN: localhost
+          DEMO_USERNAME: ci-demo
+        run: |
+          docker compose logs --tail 100 api worker web
+          if test -f .env.hosted; then
+            docker compose --env-file .env.hosted -f infra/compose.hosted.yaml logs --tail 100 api worker gateway
+          fi
+      - name: Stop isolated CI stack
+        if: always()
+        env:
+          REPOFIX_DOMAIN: localhost
+          DEMO_USERNAME: ci-demo
+        run: |
+          docker compose down --remove-orphans
+          if test -f .env.hosted && test -n "$DEMO_PASSWORD_HASH"; then
+            docker compose --env-file .env.hosted -f infra/compose.hosted.yaml down --remove-orphans
+          fi

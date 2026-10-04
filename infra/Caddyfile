@@ -1,0 +1,16 @@
+{$REPOFIX_DOMAIN} {
+    encode zstd gzip
+    header X-Content-Type-Options nosniff
+
+    route {
+        @internal path /api/internal /api/internal/*
+        respond @internal 404
+        basic_auth {
+            {$DEMO_USERNAME} {$DEMO_PASSWORD_HASH}
+        }
+        reverse_proxy web:3100 {
+            header_up -Authorization
+            flush_interval -1
+        }
+    }
+}

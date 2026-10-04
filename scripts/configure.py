@@ -8,11 +8,13 @@ from dotenv import dotenv_values
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--ticketpilot-env", type=Path)
+parser.add_argument("--output", type=Path, default=Path(__file__).resolve().parents[1] / ".env")
 args = parser.parse_args()
-target = Path(__file__).resolve().parents[1] / ".env"
+target = args.output
 current = dict(dotenv_values(target)) if target.exists() else {}
 for key in ("POSTGRES_PASSWORD", "RABBITMQ_PASSWORD", "WORKER_TOKEN"):
-    current.setdefault(key, secrets.token_hex(24))
+    if not current.get(key):
+        current[key] = secrets.token_hex(24)
 if args.ticketpilot_env:
     source = dotenv_values(args.ticketpilot_env)
     if source.get("DEFAULT_MODEL") != "openai-compatible":
@@ -27,7 +29,8 @@ if args.ticketpilot_env:
         current[new] = source[old]
     current["LIVE_ENABLED"] = "true"
 else:
-    current.setdefault("LIVE_ENABLED", "false")
+    if not current.get("LIVE_ENABLED"):
+        current["LIVE_ENABLED"] = "false"
 
 
 def quote(value):

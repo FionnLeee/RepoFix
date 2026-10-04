@@ -90,6 +90,28 @@ uv run --no-sync python scripts/verify_interview.py smoke
 
 失败运行可用 `scripts/diagnose_run.py <run-id> --output-dir <dir>` 只读扫描检查点，输出独立 `diagnostic.json/patch`；后者是**未提交、未验收的过程快照**，不会进入 `result.patch` 或官方预测。`scripts/interview_pack.py` 从明确的两条冻结 run 生成本地离线 HTML 证据包。`scripts/public_test_entry.py` 可对固定 base checkout 的已跟踪文件预检有界开发 smoke 入口；目前是只读辅助工具，尚未自动接入 image 任务，历史 Mini 任务的通用 `pytest` 命令与评分保持原样。
 
+## CI 与私有线上演示
+
+GitHub Actions 在两种模型策略下运行 Python 检查，执行 Node 行为测试、API/Web 类型检查与构建，以及隔离的确定性 Docker 部署冒烟；CI 不调用真实模型。Worker 认证拒绝特殊 Unicode Bearer 输入时不会返回服务器错误。`configure.py` 自动填充空凭据占位符，并在重复运行时保留已有非空凭据。
+
+在专用 Linux Docker 主机部署带密码的面试演示：
+
+```sh
+git submodule update --init --recursive
+uv sync --frozen
+uv run python scripts/configure.py --output .env.hosted
+uv run python scripts/prepare_baselines.py
+docker pull python:3.12-slim
+docker run --rm -it caddy:2-alpine caddy hash-password
+# 编辑 .env.hosted：REPOFIX_DOMAIN、DEMO_USERNAME 和
+# DEMO_PASSWORD_HASH='包含所有美元符号的完整哈希'。
+docker compose --env-file .env.hosted -f infra/compose.hosted.yaml up -d --build --wait --wait-timeout 180
+```
+
+域名 DNS 指向主机，开放 80/443。Caddy 提供 HTTPS 和共享演示账户登录，屏蔽浏览器入口的内部 Worker 路由，并保留流式响应。仅网关发布主机端口，控制 API、PostgreSQL、RabbitMQ、Redis 和 Qdrant 留在 Compose 网络。线上演示固定 `LIVE_ENABLED=false`，不向容器传入模型凭据。所有登录访客共用一个工作区，因此使用合成基线和专用工件目录。Worker 为创建执行沙箱而拥有主机 Docker 访问权限，应放在专用主机上运行私有演示。
+
+手动触发 **Release images** 工作流，仅允许 CI 已成功的 `main` 提交发布 API/Web/Worker 镜像，标签固定为 `sha-<完整 commit>`。在 `.env.hosted` 设置 `REPOFIX_IMAGE_PREFIX=ghcr.io/fionnleee/repofix` 和 `APP_VERSION=sha-<完整 commit>`；私有包先完成 Docker 的 GHCR 登录，然后执行 `docker compose --env-file .env.hosted -f infra/compose.hosted.yaml pull`，再执行 `up -d --no-build --wait`。保留上一版标签用于回滚，升级前一起备份 PostgreSQL 和 `runtime/`，保留数据库、消息队列和证书卷，不对需保留的数据执行 `down -v`。退回旧镜像前检查数据库兼容性。
+
 ## 仓库任务与基线
 
 网页选择基线任务，或填写公开 GitHub URL、完整 40 位 commit、子目录、问题说明、允许修改的文件和独立 unittest 验收代码。自定义仓库使用真实模型；内置基线支持预设动作与真实模型两种模式。
