@@ -26,7 +26,8 @@ def main():
             run(["uv", "run", "--no-sync", "pytest", "-m", "not docker", "-q", "-p", "no:cacheprovider"],
                 policy=policy)
         run(["node", "--experimental-strip-types", "--test",
-             "apps/control-api/test/showcase-facts.test.mjs", "apps/web/tests/showcase-evidence.test.mjs"])
+             "apps/control-api/test/auth.test.mjs", "apps/control-api/test/showcase-facts.test.mjs",
+             "apps/web/tests/showcase-evidence.test.mjs"])
     elif args.tier == "build":
         run([shutil.which("npx.cmd") or shutil.which("npx") or "npx", "--yes", "pnpm@10.17.1", "build"])
     elif args.tier == "smoke":

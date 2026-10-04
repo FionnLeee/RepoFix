@@ -90,6 +90,28 @@ uv run --no-sync python scripts/verify_interview.py smoke
 
 `scripts/diagnose_run.py <run-id> --output-dir <dir>` inspects failed-run checkpoints read-only and writes independent `diagnostic.json/patch` files. The patch is an **unsubmitted, unverified intermediate snapshot**, excluded from `result.patch` and official predictions. `scripts/interview_pack.py` builds a local offline HTML evidence pack from two explicit frozen runs. `scripts/public_test_entry.py` can inspect tracked files at a fixed base checkout for a bounded public development smoke entry point. It remains a read-only helper, not automatically integrated into image tasks; historical Mini development commands and scores are unchanged.
 
+## CI and private hosted demo
+
+GitHub Actions runs Python checks under both model policies, Node behavior tests, API/Web type checks and builds, and an isolated deterministic Docker deployment smoke. No CI step calls a real model. Worker authentication also rejects malformed Unicode bearer headers without a server error. `configure.py` fills empty secret placeholders and preserves nonempty credentials on reruns.
+
+For a password-protected interview demo on a dedicated Linux Docker host:
+
+```sh
+git submodule update --init --recursive
+uv sync --frozen
+uv run python scripts/configure.py --output .env.hosted
+uv run python scripts/prepare_baselines.py
+docker pull python:3.12-slim
+docker run --rm -it caddy:2-alpine caddy hash-password
+# Edit .env.hosted: REPOFIX_DOMAIN, DEMO_USERNAME and
+# DEMO_PASSWORD_HASH='the complete hash including dollar signs'.
+docker compose --env-file .env.hosted -f infra/compose.hosted.yaml up -d --build --wait --wait-timeout 180
+```
+
+Point the domain's DNS at the host and open ports 80/443. Caddy provides HTTPS and a shared demo login, blocks the browser-facing internal Worker routes and preserves streaming. Only the gateway publishes host ports; the control API, PostgreSQL, RabbitMQ, Redis and Qdrant stay on the Compose network. Hosted mode fixes `LIVE_ENABLED=false` and supplies no model credentials. All authenticated viewers share one workspace, so use synthetic baselines and a dedicated artifact directory. The Worker has host Docker access to create execution sandboxes; run it on a dedicated host for this private demo, not a shared public task service.
+
+The manually dispatched **Release images** workflow publishes API/Web/Worker images only for `main` commits with successful CI, tagged `sha-<full commit>`. Set `REPOFIX_IMAGE_PREFIX=ghcr.io/fionnleee/repofix` and `APP_VERSION=sha-<full commit>` in `.env.hosted`; authenticate Docker to GHCR if packages are private, then run `docker compose --env-file .env.hosted -f infra/compose.hosted.yaml pull` followed by `up -d --no-build --wait`. Retain the previous tag for rollback. Back up PostgreSQL and `runtime/` together, preserve database/broker/certificate volumes, and avoid `down -v` on retained data. Review database compatibility before returning to an older image.
+
 ## Repository tasks and baselines
 
 Choose a baseline task in the web UI, or supply a public GitHub URL, full 40-character commit, subdirectory, issue description, allowed files and independent unittest verification code. Custom repositories use real models; built-in baselines support both preset actions and real models.

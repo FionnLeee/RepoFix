@@ -1,0 +1,18 @@
+name: Bug report
+description: Report a reproducible RepoFix failure.
+labels: [bug]
+body:
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction and expected behavior
+      description: Include the commit, workspace mode and demo or live mode. Remove credentials and private source.
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Actual result and sanitized evidence
+      description: Include run state, error codes or failed tests. Keep full trajectories and runtime artifacts local.
+    validations:
+      required: true

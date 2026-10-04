@@ -1,0 +1,138 @@
+name: repofix-hosted
+
+services:
+  postgres:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: repofix
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set a unique database password}
+      POSTGRES_DB: repofix
+    volumes: ["pgdata:/var/lib/postgresql/data"]
+    healthcheck:
+      test: [CMD-SHELL, "pg_isready -U repofix -d repofix"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  rabbitmq:
+    image: rabbitmq:4.1-alpine
+    restart: unless-stopped
+    environment:
+      RABBITMQ_DEFAULT_USER: repofix
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:?set a unique broker password}
+    volumes: ["rabbitdata:/var/lib/rabbitmq"]
+    healthcheck:
+      test: [CMD, rabbitmq-diagnostics, -q, ping]
+      interval: 5s
+      timeout: 10s
+      retries: 30
+
+  redis:
+    image: redis:7.4-alpine
+    restart: unless-stopped
+    healthcheck:
+      test: [CMD, redis-cli, ping]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  qdrant:
+    image: qdrant/qdrant:v1.15.4
+    restart: unless-stopped
+    volumes: ["qdrantdata:/qdrant/storage"]
+
+  api:
+    image: ${REPOFIX_IMAGE_PREFIX:-repofix}-api:${APP_VERSION:-local}
+    build:
+      context: ..
+      dockerfile: infra/node.Dockerfile
+      target: api
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql://repofix:${POSTGRES_PASSWORD}@postgres:5432/repofix
+      AMQP_URL: amqp://repofix:${RABBITMQ_PASSWORD}@rabbitmq:5672
+      WORKER_TOKEN: ${WORKER_TOKEN:?set a unique worker token}
+      LIVE_ENABLED: "false"
+      BASELINE_CATALOG: /baseline/catalog.json
+      QDRANT_URL: http://qdrant:6333
+      ARTIFACT_ROOT: /artifacts
+    volumes:
+      - ../runtime/baseline-catalog.json:/baseline/catalog.json:ro
+      - ../runtime/artifacts:/artifacts:ro
+    depends_on:
+      postgres: { condition: service_healthy }
+      rabbitmq: { condition: service_healthy }
+      qdrant: { condition: service_started }
+    healthcheck:
+      test: [CMD, node, -e, "fetch('http://127.0.0.1:3101/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+
+  web:
+    image: ${REPOFIX_IMAGE_PREFIX:-repofix}-web:${APP_VERSION:-local}
+    build:
+      context: ..
+      dockerfile: infra/node.Dockerfile
+      target: web
+    restart: unless-stopped
+    environment:
+      API_URL: http://api:3101
+      NEXT_TELEMETRY_DISABLED: "1"
+    depends_on:
+      api: { condition: service_healthy }
+    healthcheck:
+      test: [CMD, node, -e, "fetch('http://127.0.0.1:3100/showcase').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  worker:
+    image: ${REPOFIX_IMAGE_PREFIX:-repofix}-worker:${APP_VERSION:-local}
+    build:
+      context: ..
+      dockerfile: infra/worker.Dockerfile
+    restart: unless-stopped
+    environment:
+      AMQP_URL: amqp://repofix:${RABBITMQ_PASSWORD}@rabbitmq:5672
+      CONTROL_API_URL: http://api:3101
+      WORKER_TOKEN: ${WORKER_TOKEN:?set a unique worker token}
+      MODEL_POLICY: free-quota
+      SANDBOX_IMAGE: python:3.12-slim
+      ARTIFACT_ROOT: /artifacts
+      REPOSITORY_ROOT: /repositories
+      QDRANT_URL: http://qdrant:6333
+      REDIS_URL: redis://redis:6379/0
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ../runtime/artifacts:/artifacts
+      - ../runtime/repositories:/repositories:ro
+    depends_on:
+      api: { condition: service_healthy }
+      redis: { condition: service_healthy }
+    stop_grace_period: 40s
+
+  gateway:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    environment:
+      REPOFIX_DOMAIN: ${REPOFIX_DOMAIN:?set the public DNS hostname}
+      DEMO_USERNAME: ${DEMO_USERNAME:-demo}
+      DEMO_PASSWORD_HASH: ${DEMO_PASSWORD_HASH:?set a caddy hash-password result}
+    ports:
+      - "${GATEWAY_BIND:-0.0.0.0}:${HTTP_PORT:-80}:80"
+      - "${GATEWAY_BIND:-0.0.0.0}:${HTTPS_PORT:-443}:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      web: { condition: service_healthy }
+
+volumes:
+  pgdata:
+  rabbitdata:
+  qdrantdata:
+  caddy_data:
+  caddy_config:

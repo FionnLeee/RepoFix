@@ -49,7 +49,7 @@ import {
 } from "class-validator";
 import { Type } from "class-transformer";
 import { readFileSync, existsSync } from "node:fs";
-import { timingSafeEqual } from "node:crypto";
+import { matchesWorkerToken } from "./auth";
 import { ContextService, ContextOwner, IndexBegin, IndexPublish, MemoryWrite, projectKey } from "./context";
 import { DeliveryClaim, DeliveryDecision, DeliveryReceipt, DeliveryService, PrepareDelivery } from "./delivery";
 import { sourceFacts, terminalElapsedSeconds } from "./showcase-facts";
@@ -312,13 +312,7 @@ class Store extends PrismaClient implements OnModuleInit, OnModuleDestroy {
 class Api {
   constructor(private readonly db: Store) {}
   authorize(value?: string) {
-    const expected = `Bearer ${process.env.WORKER_TOKEN}`;
-    if (
-      !process.env.WORKER_TOKEN ||
-      !value ||
-      value.length !== expected.length ||
-      !timingSafeEqual(Buffer.from(value), Buffer.from(expected))
-    )
+    if (!matchesWorkerToken(value, process.env.WORKER_TOKEN))
       throw new UnauthorizedException();
   }
   @Get("health") async health() {
