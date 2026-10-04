@@ -59,7 +59,7 @@ flowchart TD
 | 重复自建跨文件任务 | full、compact、managed 各 6/9 通过独立验收 |
 | 自动化检查 | 两种模型策略下分别 106 项 Python 测试通过；Node 6 项通过；API/Web 类型与构建检查通过 |
 
-Mini 使用混合调用上限：30 题上限 60 次、20 题上限 100 次，Reviewer 配对与重试不计入这 50 次首次尝试。这是第三方 50 题子集，不能等同于 Verified 500 榜单成绩。Aider 两项结果使用不同验收标准；上下文对照未证明 managed 的成功率或 token 优势，也未证明 Reviewer 带来稳定质量提升。
+Mini 修复评测使用 `deepseek-flash`，调用上限为 30 题 60 次、20 题 100 次，Reviewer 配对与重试不计入这 50 次首次尝试。这是第三方 50 题子集，不能等同于 Verified 500 榜单成绩。Aider 两项结果使用不同验收标准；上下文对照未证明 managed 的成功率或 token 优势，也未证明 Reviewer 带来稳定质量提升。
 
 ## 快速开始
 

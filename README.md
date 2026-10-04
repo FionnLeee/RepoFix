@@ -59,7 +59,7 @@ The `/showcase` entry provides three built-in multi-file scenarios with determin
 | Repeated custom cross-file tasks | Full, compact and managed each passed 6/9 independent verifications |
 | Automated checks | Python: 106 passed under each of two model policies; Node: 6 tests passed; API/Web types and builds passed |
 
-Mini uses mixed call limits: 60 for 30 tasks and 100 for 20 tasks. Reviewer pairs and retries are excluded from those 50 first attempts. It is a third-party 50-task subset, not a Verified 500 leaderboard result. Aider scores use different criteria. These context experiments did not establish a success-rate or token advantage for managed mode, or a consistent quality improvement from the Reviewer.
+Mini runs used `deepseek-flash`, with mixed call limits: 60 for 30 tasks and 100 for 20 tasks. Reviewer pairs and retries are excluded from those 50 first attempts. It is a third-party 50-task subset, not a Verified 500 leaderboard result. Aider scores use different criteria. These context experiments did not establish a success-rate or token advantage for managed mode, or a consistent quality improvement from the Reviewer.
 
 ## Quickstart
 
